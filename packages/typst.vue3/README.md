@@ -4,9 +4,30 @@ Vue 3 component for rendering Typst source as SVG in the browser.
 
 ## Installation
 
+Build and pack the packages from the fork checkout. Store the generated
+archives outside source control:
+
 ```bash
-yarn add vue @myriaddreamin/typst.ts @myriaddreamin/typst-ts-web-compiler @myriaddreamin/typst-ts-renderer @myriaddreamin/typst.vue3
+yarn turbo run build --filter=./packages/typst.vue3
+mkdir -p /path/to/local-packages
+npm pack --ignore-scripts --pack-destination /path/to/local-packages \
+  ./packages/compiler ./packages/renderer ./packages/typst.ts ./packages/typst.vue3
 ```
+
+In the consuming application, install all four generated archives together:
+
+```bash
+npm install --ignore-scripts vue@3.5.17 \
+  /path/to/local-packages/myriaddreamin-typst-ts-web-compiler-0.8.0-rc4.tgz \
+  /path/to/local-packages/myriaddreamin-typst-ts-renderer-0.8.0-rc4.tgz \
+  /path/to/local-packages/myriaddreamin-typst.ts-0.8.0-rc4.tgz \
+  /path/to/local-packages/myriaddreamin-typst.vue3-0.8.0-rc4.tgz
+```
+
+Use the archive names produced by the checkout if its version differs.
+Installing the `@myriaddreamin` names directly from a registry can select
+upstream packages instead of this fork. Vue and other dependencies may still
+need to be obtained separately during installation.
 
 ## Usage
 

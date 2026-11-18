@@ -106,4 +106,5 @@ export default function setTypst() {
     });
     usePackageRegistry();
   }
+  return fonts.length > 0;
 }

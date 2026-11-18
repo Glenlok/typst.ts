@@ -49,7 +49,23 @@ configureTypst({ fonts: [extraFontUrl] });
 The `?url` syntax is supplied by Vite; use your bundler's equivalent for other
 tools. Fonts are selected during compiler initialization, not replaced after
 mounting. Without any available fonts, text may not render; missing-font
-diagnostic reporting is not yet exposed by this component.
+diagnostics are not guaranteed by the compiler. If no fonts were supplied
+through `configureTypst`, each mounted component emits one non-blocking
+`warning` event. Fonts may also have been supplied outside the wrapper.
+
+## Updates and Events
+
+Changing the `content` prop compiles and renders the new source. The component
+emits a `diagnostics` event with an array of `TypstDiagnostic` values for each
+current compilation, including an empty array when there are no diagnostics.
+It emits an `error` event containing an `Error` when initialization or rendering
+fails. A `warning` event contains a string.
+
+When compilation produces no artifact, or rendering fails, the last successful
+SVG remains visible. An artifact accompanied by diagnostics is still rendered.
+The wrapper serializes its own compilation and rendering work across component
+instances and suppresses results and events from superseded requests. Direct
+use of the shared Typst runtime outside the wrapper is not serialized by it.
 
 ## Package Imports
 

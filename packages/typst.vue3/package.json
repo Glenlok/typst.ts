@@ -10,24 +10,36 @@
       "types": "./dist/types/index.d.ts",
       "import": "./dist/index.es.js",
       "require": "./dist/index.umd.js"
+    },
+    "./libertinus": {
+      "types": "./dist/types/libertinus.d.ts",
+      "import": "./dist/libertinus.js"
     }
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "dev": "vite -c vite.config.dev.ts",
     "build:types": "vue-tsc -p tsconfig.type.json",
-    "build": "vite build && yarn build:types",
+    "build": "vite build && vite build --mode umd && vite build --mode fonts && yarn build:types",
+    "test": "playwright test",
+    "test:tar": "playwright test --config playwright.tar.config.ts",
     "publish:dry": "npm publish --dry-run --access public",
     "publish:lib": "npm publish --access public || exit 0"
   },
-  "dependencies": {
-    "@myriaddreamin/typst-ts-renderer": "0.8.0-rc4",
-    "@myriaddreamin/typst.ts": "0.8.0-rc4"
-  },
   "peerDependencies": {
+    "@myriaddreamin/typst-ts-renderer": "0.8.0-rc4",
+    "@myriaddreamin/typst-ts-web-compiler": "0.8.0-rc4",
+    "@myriaddreamin/typst.ts": "0.8.0-rc4",
     "vue": "3.5.17"
   },
   "devDependencies": {
+    "@myriaddreamin/typst-ts-renderer": "0.8.0-rc4",
+    "@myriaddreamin/typst-ts-web-compiler": "0.8.0-rc4",
+    "@myriaddreamin/typst.ts": "0.8.0-rc4",
     "@vitejs/plugin-vue": "5.2.4",
+    "playwright": "1.54.1",
     "typescript": "5.8.3",
     "vue": "3.5.17",
     "vue-tsc": "2.2.12"

@@ -20,15 +20,25 @@ export const rollupOptions: RollupOptions = {
 };
 
 // https://vitejs.dev/config/
-export default defineConfig({
-  plugins: [vue()],
-  build: {
-    lib: {
-      entry: resolve(__dirname, 'src/index.ts'),
-      name: 'Typst',
-      fileName: (format) => `index.${format}.js`,
-      formats: ['es', 'umd'],
+export default defineConfig(({ mode }) => {
+  const isUmdBuild = mode === 'umd';
+  const isFontsBuild = mode === 'fonts';
+
+  return {
+    base: './',
+    plugins: [vue()],
+    build: {
+      emptyOutDir: !isUmdBuild && !isFontsBuild,
+      lib: {
+        entry: resolve(
+          __dirname,
+          isFontsBuild ? 'src/libertinus.ts' : isUmdBuild ? 'src/index.umd.ts' : 'src/index.ts',
+        ),
+        name: 'Typst',
+        fileName: format => (isFontsBuild ? 'libertinus.js' : `index.${format}.js`),
+        formats: [isUmdBuild ? 'umd' : 'es'],
+      },
+      rollupOptions,
     },
-    rollupOptions,
-  },
+  };
 });

@@ -1,43 +1,87 @@
-# Typst.vue3 [WIP]
+# Typst.vue3
 
-This is a basic vue component for rendering typst documents.
+Vue 3 component for rendering Typst source as SVG in the browser.
 
 ## Installation
 
 ```bash
-yarn add @myriaddreamin/typst.ts
-yarn add @myriaddreamin/typst.vue3
+yarn add vue @myriaddreamin/typst.ts @myriaddreamin/typst-ts-web-compiler @myriaddreamin/typst-ts-renderer @myriaddreamin/typst.vue3
 ```
 
 ## Usage
 
-use the component:
-
 ```vue
+<script setup lang="ts">
+import Typst from '@myriaddreamin/typst.vue3';
+
+const sourceCode = '= Hello World!';
+</script>
+
 <template>
   <Typst v-bind:content="sourceCode" />
 </template>
 ```
 
-## Loading Wasm from Other Places
+The component uses fork-local compiler and renderer WASM. It does not load
+fonts or fetch packages from a CDN by default. Configure fonts and packages
+before mounting the first component.
 
-Set path to wasm files:
+## Fonts
+
+To include the optional Libertinus Serif subsets in a bundled application:
 
 ```ts
-import { $typst } from '@myriaddreamin/typst.ts';
+import { configureTypst } from '@myriaddreamin/typst.vue3';
+import libertinus from '@myriaddreamin/typst.vue3/libertinus';
 
-$typst.setCompilerInitOptions({
-  beforeBuild: [],
-  getModule: () =>
-    'https://cdn.jsdelivr.net/npm/@myriaddreamin/typst-ts-web-compiler/pkg/typst_ts_web_compiler_bg.wasm',
-});
+configureTypst({ fonts: libertinus });
+```
 
-$typst.setRendererInitOptions({
-  beforeBuild: [],
-  getModule: () =>
-    'https://cdn.jsdelivr.net/npm/@myriaddreamin/typst-ts-renderer/pkg/typst_ts_renderer_bg.wasm',
+Alternatively, supply local font URLs or `Uint8Array` font bytes:
+
+```ts
+import { configureTypst } from '@myriaddreamin/typst.vue3';
+import extraFontUrl from './assets/extra-font.otf?url';
+
+configureTypst({ fonts: [extraFontUrl] });
+```
+
+The `?url` syntax is supplied by Vite; use your bundler's equivalent for other
+tools. Fonts are selected during compiler initialization, not replaced after
+mounting. Without any available fonts, text may not render; missing-font
+diagnostic reporting is not yet exposed by this component.
+
+## Package Imports
+
+Hosts can bundle version-pinned `@preview` package archives for offline use:
+
+```ts
+import { configureTypst } from '@myriaddreamin/typst.vue3';
+import libertinus from '@myriaddreamin/typst.vue3/libertinus';
+import archiveUrl from './assets/example-1.0.0.tgz?url';
+
+const response = await fetch(archiveUrl);
+if (!response.ok) throw new Error(`Could not load package archive: ${response.status}`);
+const data = new Uint8Array(await response.arrayBuffer());
+configureTypst({
+  fonts: libertinus,
+  packages: [{ name: 'example', version: '1.0.0', data }],
 });
 ```
+
+The archive must be served as gzip file data, not with `Content-Encoding: gzip`,
+which makes browsers decompress it before Typst can read it. Vite's development
+server can apply that encoding to `.gz` filenames; use `.tgz` instead.
+Include the archives of any transitive dependencies as well. Bundled packages
+are resolved first. Set `allowRemotePackageImports: true` to allow a missing
+`@preview` package to be fetched from the remote registry; otherwise no remote
+package fetch is attempted.
+
+Calling `configureTypst` after the first component starts initialization throws.
+When using the Universal Module Definition (UMD) build, call
+`Typst.configureTypst(...)` on the component global before mounting it.
+The optional Libertinus import above is an ES module; UMD hosts can supply
+their own font URLs or bytes.
 
 ## Documentation
 
@@ -48,8 +92,9 @@ See [Vue3 Library Docs](https://myriad-dreamin.github.io/typst.ts/cookery/guide/
 Run the example project:
 
 ```bash
-# At the root of the project, run the typst-ts-dev-server, serving local wasm files.
-yarn dev
-# In another terminal, run the example project.
-cd packages/typst.vue3 && yarn dev
+cd packages/typst.vue3 && yarn build && yarn dev
 ```
+
+Run the browser tests with `yarn test`. Run the additional `@tar` tests with
+`yarn test:tar`. These tests use `tar` to create a temporary package archive
+from the fixture sources.

@@ -1,24 +1,10 @@
 console.log('hello world');
 import App from './App.vue';
 import { createApp } from 'vue';
+import { configureTypst } from '../dist/index.es.js';
+import libertinus from '../dist/libertinus.js';
 
-import { $typst } from '@myriaddreamin/typst.ts';
-
-$typst.setCompilerInitOptions({
-  beforeBuild: [],
-  getModule: () =>
-    // 'https://cdn.jsdelivr.net/npm/@myriaddreamin/typst-ts-web-compiler/pkg/typst_ts_web_compiler_bg.wasm',
-    // For local development
-    'http://localhost:20810/base/node_modules/@myriaddreamin/typst-ts-web-compiler/pkg/typst_ts_web_compiler_bg.wasm',
-});
-
-$typst.setRendererInitOptions({
-  beforeBuild: [],
-  getModule: () =>
-    // 'https://cdn.jsdelivr.net/npm/@myriaddreamin/typst-ts-renderer/pkg/typst_ts_renderer_bg.wasm',
-    // For local development
-    'http://localhost:20810/base/node_modules/@myriaddreamin/typst-ts-renderer/pkg/typst_ts_renderer_bg.wasm',
-});
+configureTypst({ fonts: libertinus });
 
 const app = createApp(App);
 

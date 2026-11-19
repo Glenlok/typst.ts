@@ -39,7 +39,7 @@
     "@myriaddreamin/typst-ts-web-compiler": "0.8.0-rc4",
     "@myriaddreamin/typst.ts": "0.8.0-rc4",
     "@vitejs/plugin-vue": "5.2.4",
-    "playwright": "1.54.1",
+    "playwright": "1.65.1",
     "typescript": "5.8.3",
     "vue": "3.5.17",
     "vue-tsc": "2.2.12"

@@ -302,9 +302,17 @@ test.describe('package archives', { tag: '@tar' }, () => {
     });
   }
 
-  test('fetches a missing preview package only when remote imports are enabled', async ({
-    page,
-  }) => {
+  test('does not fetch a missing preview package by default', async ({ page }) => {
+    const externalRequests = await blockExternalRequests(page);
+    await page.goto('http://127.0.0.1:5173/tests/package.html?remotePackage');
+
+    await expect(page.getByTestId('diagnostics')).toContainText('package not found');
+    await expect(page.getByTestId('diagnostics')).toContainText('@preview/fixture:1.0.0');
+    await expect(page.locator('svg')).toHaveCount(0);
+    expect(externalRequests).toEqual([]);
+  });
+
+  test('fetches a missing preview package when remote imports are enabled', async ({ page }) => {
     const requests: string[] = [];
     const packageArchive = await readFile(resolve('tests/.generated/fixture.tgz'));
     await page.route('https://packages.typst.org/preview/fixture-1.0.0.tar.gz', route => {

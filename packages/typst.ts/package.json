@@ -321,7 +321,7 @@
     "prepublish": "turbo build",
     "test": "vitest run",
     "coverage": "vitest run --coverage",
-    "test:e2e": "node scripts/test-templates.mjs && node scripts/test-imports.mjs",
+    "test:e2e": "node --test scripts/test-imports.test.mjs && node scripts/test-templates.mjs && node scripts/test-imports.mjs",
     "publish:dry": "npm publish --dry-run --access public",
     "publish:lib": "npm publish --access public || exit 0",
     "test-install": "yarn playwright install-deps && yarn playwright install"

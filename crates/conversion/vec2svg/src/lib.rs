@@ -151,8 +151,10 @@ mod tests {
 
     #[test]
     fn html_title_is_escaped_as_text() {
-        let mut info = typst::model::DocumentInfo::default();
-        info.title = Some("</title><script>alert(1)</script>&".into());
+        let info = typst::model::DocumentInfo {
+            title: Some("</title><script>alert(1)</script>&".into()),
+            ..Default::default()
+        };
         let output = TypstPagedDocument::new(Default::default(), info);
 
         let html = render_svg_html::<SvgExportFeature>(&output);

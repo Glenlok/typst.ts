@@ -4,6 +4,7 @@ const args = process.argv.slice(2);
 
 const napiArgs = [
   'napi',
+  '--',
   'build',
   '--platform',
   '--dts-header',

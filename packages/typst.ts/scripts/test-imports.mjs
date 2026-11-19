@@ -2,7 +2,15 @@ import * as resolve from 'resolve.exports';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 
-for (const pkgName of ['typst-all-in-one.ts', 'typst.ts', 'renderer', 'compiler', 'parser', 'typst.react', 'typst.vue3']) {
+for (const pkgName of [
+  'typst-all-in-one.ts',
+  'typst.ts',
+  'renderer',
+  'compiler',
+  'parser',
+  'typst.react',
+  'typst.vue3',
+]) {
   const pkgDir = join(import.meta.dirname, '../..', pkgName);
   const pkgPath = join(pkgDir, 'package.json');
   const pkg = JSON.parse(readFileSync(pkgPath));
@@ -13,6 +21,13 @@ for (const pkgName of ['typst-all-in-one.ts', 'typst.ts', 'renderer', 'compiler'
   const validExports = Object.keys(pkg.exports).filter(key => !key.includes('*'));
 
   for (const key of validExports) {
+    const entry = pkg.exports[key];
+    const importOnly =
+      entry &&
+      typeof entry === 'object' &&
+      !Array.isArray(entry) &&
+      Object.hasOwn(entry, 'import') &&
+      Object.keys(entry).every(condition => ['types', 'import'].includes(condition));
     for (const conditions of [
       // commonjs
       ['require'],
@@ -36,6 +51,7 @@ for (const pkgName of ['typst-all-in-one.ts', 'typst.ts', 'renderer', 'compiler'
       // vite
       ['module', 'import', 'browser', 'production'],
     ]) {
+      if (importOnly && conditions.includes('require')) continue;
       for (const unsafe of [false, true]) {
         try {
           const exportPath = resolve.exports(pkg, key, { conditions, unsafe });

@@ -141,6 +141,10 @@ pub fn get_font_info(buffer: Uint8Array) -> JsValue {
 #[wasm_bindgen]
 #[allow(non_snake_case)]
 impl TypstCompiler {
+    pub fn is_safe_math(&self, source: &str, inline_only: bool) -> bool {
+        function_calls::is_safe_math(source, inline_only)
+    }
+
     pub fn find_function_calls(&self, source: &str, name: &str) -> Result<JsValue, JsValue> {
         let calls = function_calls::find_function_calls(source, name)
             .map_err(|error| JsValue::from_str(error))?;

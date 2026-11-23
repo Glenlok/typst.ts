@@ -50,6 +50,50 @@ test('finds nested calls and rejects malformed Typst source', async ({ page }) =
   expect(result.malformed).toContain('Invalid Typst syntax');
 });
 
+test('validates math without executing scripting or non-math calls', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/');
+  const result = await page.evaluate(async () => {
+    const path = '/dist/index.es.js';
+    const { validateTypstMath } = await import(path);
+    const inputs = [
+      '$x^2$',
+      '$ x / 2 $',
+      '$mat(a, b; c, d)$',
+      '$text("$")$',
+      '$x /* $ /* $ */ $ */ + y$',
+      '$x^$',
+      '$notarealmathfunction(x)$',
+      '$#read("secret")$',
+      '$std.read("secret")$',
+      '$x$ #read("secret")',
+    ];
+    const results = await Promise.all(inputs.map(source => validateTypstMath(source)));
+    return [...results, await validateTypstMath('$ x^2 $', true)];
+  });
+  expect(result).toEqual([true, true, true, true, true, false, false, false, false, false, false]);
+});
+
+test('standalone encoded display math renders between surrounding paragraphs', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/');
+  const first = page.getByTestId('first');
+  await page.getByLabel('Typst source', { exact: true }).fill(
+    '#let lumina-math(source) = eval(str(bytes(source)), mode: "markup")\n' +
+      'Before #lumina-math((36,32,120,94,50,32,36)) after',
+  );
+  const before = first.locator('.tsel').filter({ hasText: 'Before' });
+  const after = first.locator('.tsel').filter({ hasText: 'after' });
+  await expect(before).toBeVisible();
+  await expect(after).toBeVisible();
+  const beforeBox = await before.boundingBox();
+  const afterBox = await after.boundingBox();
+  expect(beforeBox).not.toBeNull();
+  expect(afterBox).not.toBeNull();
+  expect(afterBox!.y).toBeGreaterThan(beforeBox!.y + beforeBox!.height);
+  const text = (await first.locator('.tsel').allTextContents()).join('');
+  expect(text).toMatch(/[x𝑥]\s*2/);
+  expect(text).not.toContain('$');
+});
+
 test('navigates footnote locations by keyboard without inline handlers', async ({ page }) => {
   await page.goto('http://127.0.0.1:5173/tests/?fragmentLinksOnly');
   const first = page.getByTestId('first');

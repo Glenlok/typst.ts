@@ -404,6 +404,9 @@ export interface TypstCompiler {
   /** Find syntactic calls to a named function, with UTF-16 source offsets. */
   findFunctionCalls(source: string, name: string): Promise<{ start: number; end: number }[]>;
 
+  /** Check that one equation contains no code or access outside the math scope. */
+  isSafeMath(source: string, inlineOnly: boolean): Promise<boolean>;
+
   /**
    * Add a source file to the compiler.
    * @param {string} path - The path of the source file.
@@ -652,6 +655,10 @@ class TypstCompilerDriver implements TypstCompiler {
       )
     ) throw new TypeError('Invalid Typst function-call ranges');
     return calls;
+  }
+
+  async isSafeMath(source: string, inlineOnly: boolean): Promise<boolean> {
+    return this.compiler.is_safe_math(source, inlineOnly);
   }
 
   async reset(): Promise<void> {

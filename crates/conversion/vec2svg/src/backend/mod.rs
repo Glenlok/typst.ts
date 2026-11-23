@@ -499,7 +499,7 @@ impl<
     fn render_link(&mut self, _ctx: &mut C, link: &ir::LinkItem) {
         let href_handler = if let Some((page, x, y)) = link.typst_location() {
             format!(
-                r##"xlink:href="#" onclick="handleTypstLocation(this, {page}, {x}, {y}); return false""##
+                r##"xlink:href="#" data-typst-location="{page} {x} {y}" onclick="handleTypstLocation(this, {page}, {x}, {y}); return false""##
             )
         } else {
             format!(

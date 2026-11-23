@@ -4,6 +4,148 @@ import { resolve } from 'node:path';
 import { build } from 'vite';
 import type { RuntimeControl } from './runtime-control';
 
+test('finds actual Typst function calls without matching literal lookalikes', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/');
+  const result = await page.evaluate(async () => {
+    const path = '/dist/index.es.js';
+    const { findTypstFunctionCalls } = await import(path);
+    const source = '🧮 #lumina-note("41")[\\[^a\\]]\n' +
+      '#raw("#lumina-note(\\"41\\")[fake]")\n' +
+      '\\#lumina-note("41")[literal]';
+    const calls: { start: number; end: number }[] =
+      await findTypstFunctionCalls(source, 'lumina-note');
+    return calls.map(call => ({
+      ...call,
+      source: source.slice(call.start, call.end),
+    }));
+  });
+  expect(result).toEqual([{
+    start: 3,
+    end: 29,
+    source: '#lumina-note("41")[\\[^a\\]]',
+  }]);
+});
+
+test('finds nested calls and rejects malformed Typst source', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/');
+  const result = await page.evaluate(async () => {
+    const path = '/dist/index.es.js';
+    const { findTypstFunctionCalls } = await import(path);
+    const source = '#quote[#lumina-note("41")[#lumina-note("42")[x]]] ' +
+      '`#lumina-note("43")[raw]`';
+    const calls: { start: number; end: number }[] =
+      await findTypstFunctionCalls(source, 'lumina-note');
+    let malformed: string | undefined;
+    try {
+      await findTypstFunctionCalls('#lumina-note("41")[', 'lumina-note');
+    } catch (error) {
+      malformed = String(error);
+    }
+    return { calls: calls.map(call => source.slice(call.start, call.end)), malformed };
+  });
+  expect(result.calls).toEqual([
+    '#lumina-note("41")[#lumina-note("42")[x]]',
+    '#lumina-note("42")[x]',
+  ]);
+  expect(result.malformed).toContain('Invalid Typst syntax');
+});
+
+test('navigates footnote locations by keyboard without inline handlers', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/?fragmentLinksOnly');
+  const first = page.getByTestId('first');
+  await expect(first.locator('svg')).toBeVisible();
+  await page.getByLabel('Typst source', { exact: true }).fill(
+    'Reference#footnote[Footnote content.]',
+  );
+  await expect(first.locator('svg')).toContainText('Footnote content.');
+  const reference = first.getByRole('link', { name: '1' }).first();
+  await expect(reference).toBeVisible();
+  expect(await first.locator('svg [onclick]').count()).toBe(0);
+  await reference.focus();
+  await page.keyboard.press('Enter');
+  const target = first.locator('[data-typst-location-target]');
+  await expect(target).toBeFocused();
+  const targetBox = await target.boundingBox();
+  const footnoteBox = await first.getByText('Footnote content.', { exact: true }).boundingBox();
+  expect(targetBox).not.toBeNull();
+  expect(footnoteBox).not.toBeNull();
+  expect(Math.abs(targetBox!.y - footnoteBox!.y)).toBeLessThan(30);
+});
+
+test('delegates only the configured fragment prefix to the host', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/?fragmentLinksOnly&delegateFragments');
+  const first = page.getByTestId('first');
+  await page.getByLabel('Typst source', { exact: true }).fill(
+    '#link("#preview-reference-1")[Open note] #link("https://example.test")[External]',
+  );
+  const link = first.getByRole('link', { name: 'Open note' });
+  await expect(link).toBeVisible();
+  await link.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByTestId('fragments')).toHaveText('["preview-reference-1"]');
+  await expect(page.getByTestId('errors')).toHaveText('[]');
+  await expect(first.getByRole('link', { name: 'External' })).toHaveCount(0);
+});
+
+test('navigates each repeated-footnote backlink to its own reference', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/?fragmentLinksOnly');
+  const first = page.getByTestId('first');
+  await expect(first.locator('svg')).toBeVisible();
+  await page.getByLabel('Typst source', { exact: true }).fill(
+    'References#box[#footnote[Note #link(<ref-one>)[Back one] ' +
+      '#link(<ref-two>)[Back two]] <note>] <ref-one>' +
+      '#box[#footnote(<note>)] <ref-two>',
+  );
+  await expect(first.getByRole('link', { name: 'Back two' })).toBeVisible();
+  const referenceLinks = first.getByRole('link', { name: '1', exact: true });
+  const boxes = await referenceLinks.all();
+  expect(boxes.length).toBeGreaterThanOrEqual(2);
+  for (const [index, name] of ['Back one', 'Back two'].entries()) {
+    const referenceBox = await boxes[index].boundingBox();
+    await first.getByRole('link', { name }).focus();
+    await page.keyboard.press('Enter');
+    const target = boxes[index];
+    await expect(target).toBeFocused();
+    const targetBox = await target.boundingBox();
+    expect(referenceBox).not.toBeNull();
+    expect(targetBox).not.toBeNull();
+    expect(Math.abs(targetBox!.y - referenceBox!.y)).toBeLessThan(20);
+  }
+
+  await first.evaluate(element => {
+    element.style.transform = 'scale(0.1)';
+    element.style.transformOrigin = 'top left';
+  });
+  for (const [index, name] of ['Back one', 'Back two'].entries()) {
+    await first.getByRole('link', { name }).focus();
+    await page.keyboard.press('Enter');
+    await expect(boxes[index]).toBeFocused();
+  }
+});
+
+test('navigates to a labelled target on another page and reports missing targets', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/?fragmentLinksOnly');
+  const first = page.getByTestId('first');
+  await expect(first.locator('svg')).toBeVisible();
+  await page.getByLabel('Typst source', { exact: true }).fill(
+    '#link(<later>)[Go later]\n#pagebreak()\n= Second page <later>',
+  );
+  const link = first.getByRole('link', { name: 'Go later' });
+  await expect(link).toBeVisible();
+  await link.focus();
+  await page.keyboard.press('Enter');
+  const target = first.locator('[data-typst-location-target]');
+  await expect(target).toBeFocused();
+  await expect(target).toContainText('Second page');
+
+  await first.locator('[data-typst-label^="typst.ts:target:"]').evaluateAll(groups => {
+    for (const group of groups) group.removeAttribute('data-typst-label');
+  });
+  await link.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByTestId('errors')).toContainText('Typst location target has no readable content.');
+});
+
 test('consumer build excludes optional fonts by default', async ({}, testInfo) => {
   const outDir = testInfo.outputPath('consumer');
   await build({
@@ -46,6 +188,261 @@ test('renders Typst SVG without external network access', async ({ page }) => {
   await expect(svg).toBeVisible();
   await expect(svg).toContainText('Hello World!');
   await expect(page.getByTestId('warnings')).toHaveText('[]');
+});
+
+test('exposes a styled heading once before the following paragraph', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/');
+  const first = page.getByTestId('first');
+  await expect(first.locator('svg')).toBeVisible();
+  await page.getByLabel('Typst source').fill('= Test *bold* heading\n\nReadable paragraph.');
+  await expect(first.locator('svg')).toContainText('Readable paragraph.');
+
+  await expect(first.getByRole('heading', { name: 'Test bold heading', level: 1 })).toHaveCount(1);
+  const snapshot = await first.ariaSnapshot();
+  expect(snapshot).toContain('Readable paragraph.');
+  expect(snapshot.indexOf('heading "Test bold heading"')).toBeLessThan(
+    snapshot.indexOf('Readable paragraph.'),
+  );
+});
+
+test('exposes nested list structure in reading order', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/');
+  const first = page.getByTestId('first');
+  await expect(first.locator('svg')).toBeVisible();
+  await page.getByLabel('Typst source').fill('- First\n  - Nested\n- Second');
+  await expect(first.locator('svg')).toContainText('Second');
+
+  await expect(first.getByRole('list')).toHaveCount(2);
+  await expect(first.getByRole('listitem')).toHaveCount(3);
+  await expect(first).toMatchAriaSnapshot(`
+    - img:
+      - list:
+        - listitem:
+          - text: First
+          - list:
+            - listitem: Nested
+        - listitem: Second
+  `);
+});
+
+test('exposes table headers and cells in row order', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/');
+  const first = page.getByTestId('first');
+  await expect(first.locator('svg')).toBeVisible();
+  await page.getByLabel('Typst source').fill(
+    '#table(columns: 2, table.header([Parameter], [Value]), [Length], [5 m])',
+  );
+  await expect(first.locator('svg')).toContainText('5 m');
+
+  await expect(first.getByRole('table')).toHaveCount(1);
+  await expect(first.getByRole('row')).toHaveCount(2);
+  await expect(first.getByRole('columnheader', { name: 'Parameter' })).toHaveCount(1);
+  await expect(first.getByRole('columnheader', { name: 'Value' })).toHaveCount(1);
+  await expect(first.getByRole('cell', { name: 'Length' })).toHaveCount(1);
+  await expect(first.getByRole('cell', { name: '5 m' })).toHaveCount(1);
+});
+
+test('keeps a table cell together semantically when it spans pages', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/');
+  const first = page.getByTestId('first');
+  await expect(first.locator('svg')).toBeVisible();
+  await page.getByLabel('Typst source').fill(
+    '#set page(height: 110pt, width: 180pt, margin: 10pt)\n' +
+      '#table(columns: 1, table.header([Header]), [First #lorem(80) Last])',
+  );
+  await expect(first.locator('svg')).toContainText('Last');
+  expect(await first.locator('svg .typst-page').count()).toBeGreaterThan(1);
+  await expect(first.getByRole('columnheader', { name: 'Header' })).toHaveCount(1);
+  await expect(first.getByRole('cell', { name: /First.*Last/ })).toHaveCount(1);
+});
+
+test('preserves row order and spanning cells in accessible tables', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/');
+  const first = page.getByTestId('first');
+  await expect(first.locator('svg')).toBeVisible();
+  await page.getByLabel('Typst source').fill(
+    '#table(columns: 2, table.header([Parameter], [Value]), ' +
+      'table.cell(rowspan: 2)[Beam], [First], [Second])',
+  );
+  await expect(first.locator('svg')).toContainText('Second');
+  await expect(first.getByRole('cell', { name: 'Beam' })).toHaveAttribute('aria-rowspan', '2');
+  await expect(first).toMatchAriaSnapshot(`
+    - img:
+      - table:
+        - row "Parameter Value":
+          - columnheader "Parameter"
+          - columnheader "Value"
+        - row "Beam First":
+          - cell "Beam"
+          - cell "First"
+        - row "Second":
+          - cell "Second"
+  `);
+});
+
+test('exposes an image alternative description', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/?assets');
+  const first = page.getByTestId('first');
+  await expect(first.locator('svg')).toBeVisible();
+  await page.getByLabel('Typst source', { exact: true }).fill(
+    '#image("assets/demo.svg", alt: "Beam loading schematic")',
+  );
+  await expect(first.getByRole('img', { name: 'Beam loading schematic' })).toHaveCount(1);
+});
+
+test('exposes one named link for styled link text', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/');
+  const first = page.getByTestId('first');
+  await expect(first.locator('svg')).toBeVisible();
+  await page.getByLabel('Typst source', { exact: true }).fill(
+    '#link("#details")[See *details*]',
+  );
+  await expect(first.locator('svg')).toContainText('details');
+  const link = first.getByRole('link', { name: 'See details' });
+  await expect(link).toHaveCount(1);
+  await link.focus();
+  await expect(link).toBeFocused();
+});
+
+test('preserves links inside a list and surrounding reading order', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/');
+  const first = page.getByTestId('first');
+  await expect(first.locator('svg')).toBeVisible();
+  await page.getByLabel('Typst source', { exact: true }).fill(
+    'Before.\n\n- Read #link("#first")[the *first* item] now.\n' +
+      '- Read #link("#second")[the second item].\n\nAfter.',
+  );
+  await expect(first.locator('svg')).toContainText('After.');
+  await expect(first).toMatchAriaSnapshot(`
+    - img:
+      - text: Before.
+      - list:
+        - listitem:
+          - text: Read
+          - link "the first item"
+          - text: now.
+        - listitem:
+          - text: Read
+          - link "the second item"
+          - text: .
+      - text: After.
+  `);
+});
+
+test('makes external links inert when only fragment links are allowed', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/?fragmentLinksOnly');
+  const first = page.getByTestId('first');
+  await expect(first.locator('svg')).toBeVisible();
+  await page.getByLabel('Typst source', { exact: true }).fill(
+    '#link("https://example.test")[External] and #link("#details")[Details]',
+  );
+  await expect(first.locator('svg')).toContainText('Details');
+  await expect(first.getByRole('link', { name: 'External' })).toHaveCount(0);
+  await expect(first.getByRole('link', { name: 'Details' })).toHaveCount(1);
+  expect(await first.locator('svg a').evaluateAll(anchors =>
+    anchors.map(anchor => anchor.getAttributeNS('http://www.w3.org/1999/xlink', 'href'))
+  )).not.toContain('https://example.test');
+});
+
+test('renders each cell’s own declared image without network access', async ({ page }) => {
+  const externalRequests = await blockExternalRequests(page);
+  await page.goto('http://127.0.0.1:5173/tests/?assets');
+
+  const first = page.getByTestId('first').locator('svg');
+  const second = page.getByTestId('second').locator('svg');
+  await expect(first).toBeVisible();
+  await expect(second).toBeVisible();
+  expect(await first.screenshot()).not.toEqual(await second.screenshot());
+  expect(externalRequests).toEqual([]);
+});
+
+async function countPixels(page: Page, screenshot: Buffer, color: [number, number, number]) {
+  return await page.evaluate(async ({ data, color }) => {
+    const bitmap = await createImageBitmap(new Blob([new Uint8Array(data)], { type: 'image/png' }));
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const context = canvas.getContext('2d')!;
+    context.drawImage(bitmap, 0, 0);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let count = 0;
+    for (let i = 0; i < pixels.length; i += 4) {
+      if (pixels[i] === color[0] && pixels[i + 1] === color[1] && pixels[i + 2] === color[2]) count++;
+    }
+    return count;
+  }, { data: [...screenshot], color });
+}
+
+test('preserves a diagram’s CSS-variable background', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/?assets&themed');
+  const first = page.getByTestId('first').locator('svg');
+  await expect(first).toBeVisible();
+  const redPixels = await countPixels(page, await first.screenshot(), [255, 0, 0]);
+  expect(redPixels).toBeGreaterThan(100);
+});
+
+test('updates a diagram when the system color scheme changes', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.goto('http://127.0.0.1:5173/tests/?assets&media');
+  const first = page.getByTestId('first').locator('svg');
+  await expect(first).toBeVisible();
+  expect(await countPixels(page, await first.screenshot(), [255, 0, 0])).toBeGreaterThan(100);
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await expect.poll(async () => countPixels(page, await first.screenshot(), [0, 0, 255])).toBeGreaterThan(100);
+});
+
+test('updates changed images and does not reuse another cell’s image', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/?assets&themed');
+  const first = page.getByTestId('first').locator('svg');
+  await expect(first).toBeVisible();
+  expect(await countPixels(page, await first.screenshot(), [255, 0, 0])).toBeGreaterThan(100);
+  await page.getByRole('button', { name: 'Change first image' }).click();
+  await expect.poll(async () => countPixels(page, await first.screenshot(), [0, 0, 255])).toBeGreaterThan(100);
+  await page.getByRole('button', { name: 'Remove first image' }).click();
+  await expect(page.getByTestId('diagnostics')).toContainText('failed to load file');
+});
+
+test('returns SVG-space anchors for requested math rows', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/?rowAnchors');
+
+  await expect(page.getByTestId('first').locator('svg')).toBeVisible();
+  await expect.poll(() =>
+    page.getByTestId('row-anchors').evaluate((element) =>
+      JSON.parse(element.textContent ?? '[]').length
+    )
+  ).toBe(2);
+
+  const anchors = await page.getByTestId('row-anchors').evaluate((element) =>
+    JSON.parse(element.textContent ?? '[]')
+  );
+  expect(anchors.map((anchor: { row: number }) => anchor.row)).toEqual([1, 2]);
+  expect(anchors[0].height).toBeGreaterThan(0);
+  expect(anchors[1].height).toBeGreaterThan(0);
+  expect(anchors[1].y).toBeGreaterThan(anchors[0].y);
+
+  const viewBoxes = await page.locator('svg').evaluateAll(elements =>
+    elements.map(element => element.getAttribute('viewBox'))
+  );
+  expect(viewBoxes[0]).toBe(viewBoxes[1]);
+});
+
+test('rerenders only when requested row numbers change', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/?rowAnchors');
+  await expect(page.getByTestId('row-anchors')).toContainText('"row":2');
+  await expect(page.getByTestId('diagnostic-events')).toHaveText('[[]]');
+
+  await page.getByRole('button', { name: 'Recreate rows' }).click();
+  await expect(page.getByTestId('diagnostic-events')).toHaveText('[[]]');
+  await expect(page.getByTestId('row-anchors')).toContainText('"row":2');
+
+  await page.getByRole('button', { name: 'Select first row' }).click();
+  await expect(page.getByTestId('row-anchors')).not.toContainText('"row":2');
+  await expect(page.getByTestId('row-anchors')).toContainText('"row":1');
+  await expect(page.getByTestId('diagnostic-events')).toHaveText('[[],[]]');
+
+  await page.getByRole('button', { name: 'Add second row' }).click();
+  await expect(page.getByTestId('row-anchors')).toContainText('"row":2');
+  await expect(page.getByTestId('diagnostic-events')).toHaveText('[[],[],[]]');
 });
 
 test('updates the SVG when the source changes', async ({ page }) => {

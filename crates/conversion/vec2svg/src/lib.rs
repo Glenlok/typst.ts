@@ -211,5 +211,6 @@ mod tests {
             svg.contains("onclick=\"handleTypstLocation(this, 2, 3.5, 4.25); return false\""),
             "{svg}"
         );
+        assert!(svg.contains("data-typst-location=\"2 3.5 4.25\""), "{svg}");
     }
 }

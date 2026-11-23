@@ -17,6 +17,8 @@ import {
   RenderToSvgOptions,
   ManipulateDataOptions,
   RenderSvgOptions,
+  RenderSvgWithRowAnchorsOptions,
+  RenderSvgWithRowAnchorsResult,
   RenderInSessionOptions,
   MountDomOptions,
   OffscreenRenderCanvasOptions,
@@ -463,6 +465,13 @@ export interface TypstRenderer extends TypstSvgRenderer {
    * ```
    */
   renderSvg(options: RenderOptions<RenderSvgOptions>): Promise<string>;
+
+  /**
+   * Render an SVG and verify that each requested row label is present.
+   */
+  renderSvgWithRowAnchors(
+    options: RenderOptions<RenderSvgWithRowAnchorsOptions>,
+  ): Promise<RenderSvgWithRowAnchorsResult>;
 
   /**
    * Render a Typst document to svg.
@@ -945,6 +954,32 @@ export class TypstRendererDriver {
       }
 
       return Promise.resolve(this.renderer.svg_data(sessionRef[kObject], parts));
+    });
+  }
+
+  renderSvgWithRowAnchors(
+    options: RenderOptions<RenderSvgWithRowAnchorsOptions>,
+  ): Promise<RenderSvgWithRowAnchorsResult> {
+    const rowNumbers = [...options.rowNumbers];
+    if (
+      rowNumbers.some(row => !Number.isSafeInteger(row) || row < 1) ||
+      new Set(rowNumbers).size !== rowNumbers.length
+    ) {
+      throw new TypeError('rowNumbers must contain unique positive safe integers');
+    }
+
+    return this.withinOptionSession(options, async sessionRef => {
+      const svg = await this.renderer.svg_data_with_row_anchors(
+        sessionRef[kObject],
+        Float64Array.from(rowNumbers),
+      );
+      return {
+        svg,
+        rowAnchors: rowNumbers.map(row => ({
+          row,
+          label: `typst.ts:row-anchor:${row}`,
+        })),
+      };
     });
   }
 

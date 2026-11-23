@@ -401,6 +401,9 @@ export interface TypstCompiler {
    */
   getAst(mainFilePath: string): Promise<string>;
 
+  /** Find syntactic calls to a named function, with UTF-16 source offsets. */
+  findFunctionCalls(source: string, name: string): Promise<{ start: number; end: number }[]>;
+
   /**
    * Add a source file to the compiler.
    * @param {string} path - The path of the source file.
@@ -636,6 +639,19 @@ class TypstCompilerDriver implements TypstCompiler {
 
   async getAst(mainFilePath: string): Promise<string> {
     return this.compiler.get_ast(mainFilePath);
+  }
+
+  async findFunctionCalls(source: string, name: string): Promise<{ start: number; end: number }[]> {
+    const calls: unknown = this.compiler.find_function_calls(source, name);
+    if (
+      !Array.isArray(calls) ||
+      !calls.every(call =>
+        typeof call === 'object' && call !== null &&
+        Number.isSafeInteger(call.start) && Number.isSafeInteger(call.end) &&
+        call.start >= 0 && call.end > call.start && call.end <= source.length
+      )
+    ) throw new TypeError('Invalid Typst function-call ranges');
+    return calls;
   }
 
   async reset(): Promise<void> {

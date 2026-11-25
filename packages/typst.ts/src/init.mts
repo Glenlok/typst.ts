@@ -40,9 +40,9 @@ class ComponentBuilder<T> {
     builder: TypstCommonBuilder<T>,
     fonts: (string | Uint8Array | LazyFont)[],
   ): Promise<void> {
-    const escapeImport = new Function('m', 'return import(m)');
     const fetcher = (this.fetcher ||= await (async function () {
-      const { fetchBuilder, FileSystemCache } = await escapeImport('node-fetch-cache');
+      const moduleName = 'node-fetch-cache';
+      const { fetchBuilder, FileSystemCache } = await import(/* @vite-ignore */ moduleName);
       const cache = new FileSystemCache({
         /// By default, we don't have a complicated cache policy.
         cacheDirectory: '.cache/typst/fonts',

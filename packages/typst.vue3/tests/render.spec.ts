@@ -1,8 +1,51 @@
 import { expect, test, type Page } from 'playwright/test';
 import { readFile, readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { build } from 'vite';
 import type { RuntimeControl } from './runtime-control';
+
+test('renders with Wasm compilation but without JavaScript eval', async ({ page }) => {
+  await page.route('http://127.0.0.1:5173/tests/', async route => {
+    const response = await route.fetch();
+    await route.fulfill({
+      response,
+      headers: {
+        ...response.headers(),
+        'content-security-policy':
+          "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; " +
+          "style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'",
+      },
+    });
+  });
+  await page.goto('http://127.0.0.1:5173/tests/');
+  await expect(page.getByTestId('first').locator('svg')).toBeVisible();
+});
+
+test('default compiler access reports missing files and packages', async () => {
+  const modulePath = pathToFileURL(resolve('../compiler/pkg/typst_ts_web_compiler.mjs')).href;
+  const { default: init, TypstCompilerBuilder } = await import(modulePath);
+  const wasm = await readFile(resolve('../compiler/pkg/typst_ts_web_compiler_bg.wasm'));
+  await init({ module_or_path: wasm });
+  const builder = new TypstCompilerBuilder();
+  builder.set_dummy_access_model();
+  const compiler = await builder.build();
+  try {
+    compiler.add_source('/main.typ', '#read("missing.txt")');
+    const file = compiler.compile('/main.typ', null, '_dummy', 3);
+    expect(file.hasError).toBe(true);
+    expect(file.diagnostics[0].message).toContain('access denied');
+
+    compiler.add_source('/package.typ', '#import "@preview/fixture:1.0.0": x');
+    const registry = compiler.compile('/package.typ', null, '_dummy', 3);
+    expect(registry.hasError).toBe(true);
+    expect(registry.diagnostics[0].message).toContain(
+      'Dummy Registry, please initialize compiler with withPackageRegistry()',
+    );
+  } finally {
+    compiler.free();
+  }
+});
 
 test('finds actual Typst function calls without matching literal lookalikes', async ({ page }) => {
   await page.goto('http://127.0.0.1:5173/tests/');

@@ -33,7 +33,8 @@
     "pkg/typst_ts_web_compiler_bg.wasm",
     "pkg/typst_ts_web_compiler_bg.wasm.d.ts",
     "pkg/typst_ts_web_compiler.mjs",
-    "pkg/typst_ts_web_compiler.d.ts"
+    "pkg/typst_ts_web_compiler.d.ts",
+    "pkg/snippets/**/*.js"
   ],
   "scripts": {
     "build:dev": "wasm-pack build --target web --scope myriaddreamin --dev -- --locked --no-default-features --features web,misc",

@@ -79,6 +79,7 @@ impl TypstRenderer {
 
         let view = layout.pages(client.module()).unwrap();
         let module = view.module();
+        let svg = UsingExporter::render_flat_svg(module, view.pages(), None);
         for row in row_numbers {
             if !row.is_finite()
                 || row.fract() != 0.0
@@ -88,23 +89,12 @@ impl TypstRenderer {
             }
 
             let label = format!("typst.ts:row-anchor:{row:.0}");
-            let found = module.items.values().any(|item| match item {
-                reflexo_typst2vec::ir::VecItem::Labelled(reflexo_typst2vec::ir::LabelledRef(
-                    existing,
-                    _,
-                )) => existing.as_ref() == label.as_str(),
-                _ => false,
-            });
-            if !found {
+            if !svg.contains(&format!("data-typst-label=\"{label}\"")) {
                 return Err(error_once!("Renderer.MissingRowAnchor"));
             }
         }
 
-        Ok(UsingExporter::render_flat_svg(
-            view.module(),
-            view.pages(),
-            None,
-        ))
+        Ok(svg)
     }
 
     pub fn get_customs(&self, session: &RenderSession) -> Option<js_sys::Array> {

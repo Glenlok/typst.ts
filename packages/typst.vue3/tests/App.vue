@@ -66,6 +66,9 @@ function onRowAnchors(
   <button v-if="params.has('assets')" @click="firstAssets = [{ path: 'assets/demo.svg', bytes: diagram('blue') }]">
     Change first image
   </button>
+  <button v-if="params.has('assets')" @click="firstAssets[0].bytes = diagram('#00ff00')">
+    Mutate first image bytes
+  </button>
   <button v-if="params.has('assets')" @click="firstAssets = []">Remove first image</button>
   <button v-if="params.has('rowAnchors')" @click="requestedRows = [...requestedRows]">
     Recreate rows

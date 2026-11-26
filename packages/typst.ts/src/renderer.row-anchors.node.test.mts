@@ -59,4 +59,67 @@ describe('row anchors', () => {
       }),
     ).rejects.toThrow('Renderer.MissingRowAnchor');
   });
+
+  it('rejects row anchors that are no longer in the current incremental document', async () => {
+    const compiler = createTypstCompiler();
+    await compiler.init({
+      beforeBuild: [
+        loadFonts([
+          new Uint8Array(
+            readFileSync(
+              new URL('../../../assets/data/LibertinusSerif-Regular-subset.otf', import.meta.url),
+            ),
+          ),
+        ]),
+      ],
+      getModule: () => readWasm('../../compiler/pkg/typst_ts_web_compiler_bg.wasm'),
+    });
+
+    const mainFilePath = '/main.typ';
+    const rowOne =
+      '$ #metadata("typst.ts:row-anchor:start:1") x = 1 #metadata("typst.ts:row-anchor:end:1") \\\\ ';
+    const rowTwo =
+      '#metadata("typst.ts:row-anchor:start:2") y = 2 #metadata("typst.ts:row-anchor:end:2") $';
+    compiler.addSource(mainFilePath, rowOne + rowTwo);
+
+    let firstDelta!: Uint8Array;
+    let secondDelta!: Uint8Array;
+    await compiler.withIncrementalServer(async incrementalServer => {
+      const firstCompile = await compiler.compile({ mainFilePath, incrementalServer });
+      if (!firstCompile.result) {
+        throw new Error(
+          `Expected compiled Typst output: ${
+            firstCompile.diagnostics?.map(({ message }) => message).join('; ')
+          }`,
+        );
+      }
+      firstDelta = firstCompile.result;
+
+      compiler.addSource(mainFilePath, '$ ' + rowTwo);
+      const secondCompile = await compiler.compile({ mainFilePath, incrementalServer });
+      if (!secondCompile.result) {
+        throw new Error(
+          `Expected compiled Typst output: ${
+            secondCompile.diagnostics?.map(({ message }) => message).join('; ')
+          }`,
+        );
+      }
+      secondDelta = secondCompile.result;
+    });
+
+    const renderer = createTypstRenderer();
+    await renderer.init({
+      getModule: () => readWasm('../../renderer/pkg/typst_ts_renderer_bg.wasm'),
+    });
+    const session = await renderer.createModule();
+    session.manipulateData({ action: 'merge', data: firstDelta });
+    session.manipulateData({ action: 'merge', data: secondDelta });
+
+    await expect(
+      renderer.renderSvgWithRowAnchors({
+        renderSession: session,
+        rowNumbers: [1],
+      }),
+    ).rejects.toThrow('Renderer.MissingRowAnchor');
+  });
 });

@@ -233,6 +233,22 @@ test('navigates to a labelled target on another page and reports missing targets
   await expect(page.getByTestId('errors')).toContainText('Typst location target has no readable content.');
 });
 
+test('navigates to a coordinate-based position in fragment-only mode', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/?fragmentLinksOnly');
+  const first = page.getByTestId('first');
+  await expect(first.locator('svg')).toBeVisible();
+  await page.getByLabel('Typst source', { exact: true }).fill(
+    '#link((page: 2, x: 10pt, y: 20pt))[Go to position]\n#pagebreak()\n= Target page',
+  );
+  const link = first.getByRole('link', { name: 'Go to position' });
+  await expect(link).toBeVisible();
+  await link.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(page.getByTestId('errors')).toHaveText('[]');
+  await expect(first.getByRole('heading', { name: 'Target page' })).toBeInViewport();
+});
+
 test('consumer build excludes optional fonts by default', async ({}, testInfo) => {
   const outDir = testInfo.outputPath('consumer');
   await build({
@@ -367,6 +383,46 @@ test('preserves row order and spanning cells in accessible tables', async ({ pag
   `);
 });
 
+test('includes empty rows and cells in accessible tables', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/');
+  const first = page.getByTestId('first');
+  await expect(first.locator('svg')).toBeVisible();
+  await page.getByLabel('Typst source').fill(
+    '#table(columns: 2, table.header([Parameter], []), [Length], [], [], [], [Material], [Steel])',
+  );
+  await expect(first.locator('svg')).toContainText('Steel');
+
+  await expect(first.getByRole('table')).toHaveCount(1);
+  await expect(first.getByRole('row')).toHaveCount(4);
+  await expect(first.getByRole('columnheader')).toHaveCount(2);
+  await expect(first.getByRole('cell')).toHaveCount(6);
+  await expect(first.getByRole('row').nth(2).getByRole('cell')).toHaveCount(2);
+});
+
+test('documents empty-table structure lost by Typst layout', async ({ page }) => {
+  test.fail(true, 'Typst drops cell tags when empty cells produce no frames');
+  await page.goto('http://127.0.0.1:5173/tests/?assets');
+  const first = page.getByTestId('first');
+  await expect(first.locator('svg')).toBeVisible();
+  const source = page.getByLabel('Typst source', { exact: true });
+
+  await source.fill(
+    '#table(columns: 2, stroke: 1pt + black, inset: 5pt, [], [], [], [])',
+  );
+  await expect(first.getByRole('table')).toHaveCount(1);
+});
+
+test('preserves image-only table cells without alt text', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/?assets');
+  const first = page.getByTestId('first');
+  await expect(first.locator('svg')).toBeVisible();
+  const source = page.getByLabel('Typst source', { exact: true });
+  await source.fill('#table(columns: 1, image("assets/demo.svg"))');
+  await expect(first.getByRole('table')).toHaveCount(1);
+  await expect(first.getByRole('row')).toHaveCount(1);
+  await expect(first.getByRole('cell')).toHaveCount(1);
+});
+
 test('exposes an image alternative description', async ({ page }) => {
   await page.goto('http://127.0.0.1:5173/tests/?assets');
   const first = page.getByTestId('first');
@@ -485,6 +541,8 @@ test('updates changed images and does not reuse another cell’s image', async (
   expect(await countPixels(page, await first.screenshot(), [255, 0, 0])).toBeGreaterThan(100);
   await page.getByRole('button', { name: 'Change first image' }).click();
   await expect.poll(async () => countPixels(page, await first.screenshot(), [0, 0, 255])).toBeGreaterThan(100);
+  await page.getByRole('button', { name: 'Mutate first image bytes' }).click();
+  await expect.poll(async () => countPixels(page, await first.screenshot(), [0, 255, 0])).toBeGreaterThan(100);
   await page.getByRole('button', { name: 'Remove first image' }).click();
   await expect(page.getByTestId('diagnostics')).toContainText('failed to load file');
 });

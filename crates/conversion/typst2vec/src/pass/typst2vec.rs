@@ -19,17 +19,18 @@ use typst::{
     foundations::{Bytes, Content, Smart, StyleChain, Value},
     introspection::{Introspector, Location, MetadataElem, PagedPosition, Tag},
     layout::{
-        Abs as TypstAbs, Axes, Dir, Frame, FrameItem, FrameKind, Inherit, Point as TypstPoint,
-        Ratio as TypstRatio, Size as TypstSize, Transform as TypstTransform,
-        resolve::CellGrid,
+        resolve::CellGrid, Abs as TypstAbs, Axes, Dir, Frame, FrameItem, FrameKind, Inherit,
+        Point as TypstPoint, Ratio as TypstRatio, Size as TypstSize, Transform as TypstTransform,
     },
-    model::{Destination, EnumElem, HeadingElem, LinkMarker, ListElem, Outlinable, TableCell, TableElem},
+    model::{
+        Destination, EnumElem, HeadingElem, LinkMarker, ListElem, Outlinable, TableCell, TableElem,
+    },
     pdf::{PdfMarkerTag, PdfMarkerTagKind, TableCellKind, TableHeaderScope},
     syntax::Span,
     text::TextItem as TypstTextItem,
     visualize::{
-        CurveItem as TypstCurveItem, FillRule, FixedStroke, Geometry, Gradient, ImageElem,
-        Image as TypstImage, LineCap, LineJoin, Paint, RelativeTo, Shape, Tiling,
+        CurveItem as TypstCurveItem, FillRule, FixedStroke, Geometry, Gradient,
+        Image as TypstImage, ImageElem, LineCap, LineJoin, Paint, RelativeTo, Shape, Tiling,
     },
 };
 use typst_html::{HtmlElement, HtmlNode};
@@ -111,15 +112,24 @@ fn semantic_kind(element: &Content) -> Option<SemanticKind> {
     } else if let Some(cell) = element.to_packed::<TableCell>() {
         let styles = StyleChain::default();
         Some(SemanticKind::TableCell {
-            x: cell.x.get(styles).unwrap_or_else(|| panic!("table cell column is unresolved")),
-            y: cell.y.get(styles).unwrap_or_else(|| panic!("table cell row is unresolved")),
+            x: cell
+                .x
+                .get(styles)
+                .unwrap_or_else(|| panic!("table cell column is unresolved")),
+            y: cell
+                .y
+                .get(styles)
+                .unwrap_or_else(|| panic!("table cell row is unresolved")),
             colspan: cell.colspan.get(styles).get(),
             rowspan: cell.rowspan.get(styles).get(),
             kind: cell.kind.get(styles),
             repeated: cell.is_repeated.get(styles),
         })
     } else if let Some(image) = element.to_packed::<ImageElem>() {
-        image.alt.get_ref(StyleChain::default()).as_ref()
+        image
+            .alt
+            .get_ref(StyleChain::default())
+            .as_ref()
             .map(|alt| SemanticKind::Image(alt.to_string()))
     } else if let Some(marker) = element.to_packed::<PdfMarkerTag>() {
         match marker.kind {
@@ -132,10 +142,77 @@ fn semantic_kind(element: &Content) -> Option<SemanticKind> {
     }
 }
 
+fn table_cell_label(
+    location: Location,
+    kind: &SemanticKind,
+    grid: Option<&CellGrid>,
+) -> Option<String> {
+    let SemanticKind::TableCell {
+        x,
+        y,
+        colspan,
+        rowspan,
+        kind,
+        repeated,
+    } = kind
+    else {
+        return None;
+    };
+
+    let header = match kind {
+        Smart::Custom(TableCellKind::Header(_, TableHeaderScope::Row)) => "rowheader",
+        Smart::Custom(TableCellKind::Header(..)) => "columnheader",
+        Smart::Custom(_) => "cell",
+        Smart::Auto
+            if grid.is_some_and(|grid| {
+                grid.headers.iter().any(|header| {
+                    header
+                        .range
+                        .contains(&(if grid.has_gutter { 2 * y } else { *y }))
+                })
+            }) =>
+        {
+            "columnheader"
+        }
+        Smart::Auto => "cell",
+    };
+
+    Some(format!(
+        "typst.ts:table-cell:{}:{y}:{x}:{colspan}:{rowspan}:{header}:{}",
+        location.hash(),
+        u8::from(*repeated)
+    ))
+}
+
+fn table_label(location: Location, grid: &CellGrid) -> String {
+    let header_rows = (0..grid.non_gutter_row_count())
+        .filter(|row| {
+            grid.headers.iter().any(|header| {
+                header
+                    .range
+                    .contains(&if grid.has_gutter { 2 * *row } else { *row })
+            })
+        })
+        .map(|row| row.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+
+    format!(
+        "typst.ts:table:{}:{}:{}:{header_rows}",
+        location.hash(),
+        grid.non_gutter_row_count(),
+        grid.non_gutter_column_count()
+    )
+}
+
 fn frame_needs_ordered_traversal(frame: &Frame) -> bool {
     frame.items().any(|(_, item)| match item {
         FrameItem::Group(group) => frame_needs_ordered_traversal(&group.frame),
-        FrameItem::Tag(Tag::Start(element, flags)) if flags.tagged && semantic_kind(element).is_some() => true,
+        FrameItem::Tag(Tag::Start(element, flags))
+            if flags.tagged && semantic_kind(element).is_some() =>
+        {
+            true
+        }
         FrameItem::Link(Destination::Location(_), _) => true,
         _ => row_anchor_marker(item).is_some(),
     })
@@ -585,8 +662,10 @@ impl<const ENABLE_REF_CNT: bool> Typst2VecPassImpl<ENABLE_REF_CNT> {
 
                         let mut inner = if let Some(row_anchor_state) = row_anchor_state {
                             let logical_parent = group.parent.filter(|parent| {
-                                parent.inherit == Inherit::Yes &&
-                                    row_anchor_state.logical_paths.contains_key(&parent.location)
+                                parent.inherit == Inherit::Yes
+                                    && row_anchor_state
+                                        .logical_paths
+                                        .contains_key(&parent.location)
                             });
                             let previous = logical_parent.map(|parent| {
                                 let path = row_anchor_state.logical_paths[&parent.location].clone();
@@ -741,7 +820,10 @@ impl<const ENABLE_REF_CNT: bool> Typst2VecPassImpl<ENABLE_REF_CNT> {
         if row_anchor_state.is_some() {
             for (idx, (pos, item)) in frame.items().as_slice().iter().enumerate() {
                 if let FrameItem::Tag(tag) = item {
-                    row_anchor_state.as_deref_mut().unwrap().update_semantics(tag);
+                    row_anchor_state
+                        .as_deref_mut()
+                        .unwrap()
+                        .update_semantics(tag);
                 }
                 if let Some(marker) = row_anchor_marker(item) {
                     row_anchor_state.as_deref_mut().unwrap().update(marker);
@@ -753,50 +835,69 @@ impl<const ENABLE_REF_CNT: bool> Typst2VecPassImpl<ENABLE_REF_CNT> {
                 {
                     if !matches!(item, FrameItem::Group(_)) {
                         if let FrameItem::Link(Destination::Location(location), _) = item {
-                            let label: ImmutStr = format!("typst.ts:destination:{}", (*location).hash()).into();
-                            converted_item = self.store(VecItem::Labelled(LabelledRef(label, converted_item)));
+                            let label: ImmutStr =
+                                format!("typst.ts:destination:{}", (*location).hash()).into();
+                            converted_item =
+                                self.store(VecItem::Labelled(LabelledRef(label, converted_item)));
                         }
-                        if matches!(item, FrameItem::Text(_) | FrameItem::Image(..) | FrameItem::Link(..)) {
+                        if matches!(
+                            item,
+                            FrameItem::Text(_) | FrameItem::Image(..) | FrameItem::Link(..)
+                        ) {
                             for location in &row_anchor_state.as_deref().unwrap().active_targets {
-                                let label: ImmutStr = format!("typst.ts:target:{}", (*location).hash()).into();
-                                converted_item = self.store(VecItem::Labelled(LabelledRef(label, converted_item)));
+                                let label: ImmutStr =
+                                    format!("typst.ts:target:{}", (*location).hash()).into();
+                                converted_item = self
+                                    .store(VecItem::Labelled(LabelledRef(label, converted_item)));
                             }
                         }
-                        if matches!(item, FrameItem::Text(_) | FrameItem::Image(..) | FrameItem::Link(..)) {
-                            for (location, kind) in row_anchor_state.as_deref().unwrap().semantics.iter().rev() {
+                        if matches!(
+                            item,
+                            FrameItem::Text(_) | FrameItem::Image(..) | FrameItem::Link(..)
+                        ) {
+                            for (location, kind) in
+                                row_anchor_state.as_deref().unwrap().semantics.iter().rev()
+                            {
                                 let id = (*location).hash();
                                 let label: ImmutStr = match kind {
-                                    SemanticKind::Heading(level) => format!("typst.ts:heading:{id}:{level}"),
+                                    SemanticKind::Heading(level) => {
+                                        format!("typst.ts:heading:{id}:{level}")
+                                    }
                                     SemanticKind::List => format!("typst.ts:list:{id}"),
                                     SemanticKind::ListItem => format!("typst.ts:list-item:{id}"),
-                                    SemanticKind::ListMarker => format!("typst.ts:list-marker:{id}"),
+                                    SemanticKind::ListMarker => {
+                                        format!("typst.ts:list-marker:{id}")
+                                    }
                                     SemanticKind::Link => format!("typst.ts:link:{id}"),
-                                    SemanticKind::Table(_) => format!("typst.ts:table:{id}"),
-                                    SemanticKind::TableCell { x, y, colspan, rowspan, kind, repeated } => {
-                                        let grid = row_anchor_state.as_deref().unwrap().semantics.iter().rev()
+                                    SemanticKind::Table(grid) => {
+                                        table_label(*location, grid.as_ref())
+                                    }
+                                    SemanticKind::TableCell { .. } => {
+                                        let grid = row_anchor_state
+                                            .as_deref()
+                                            .unwrap()
+                                            .semantics
+                                            .iter()
+                                            .rev()
                                             .find_map(|(_, kind)| match kind {
                                                 SemanticKind::Table(grid) => Some(grid),
                                                 _ => None,
                                             });
-                                        let header = match kind {
-                                            Smart::Custom(TableCellKind::Header(_, TableHeaderScope::Row)) => "rowheader",
-                                            Smart::Custom(TableCellKind::Header(..)) => "columnheader",
-                                            Smart::Custom(_) => "cell",
-                                            Smart::Auto if grid.is_some_and(|grid| grid.headers.iter().any(|header|
-                                                header.range.contains(&(if grid.has_gutter { 2 * y } else { *y })))) => "columnheader",
-                                            Smart::Auto => "cell",
-                                        };
-                                        format!("typst.ts:table-cell:{id}:{y}:{x}:{colspan}:{rowspan}:{header}:{}", u8::from(*repeated))
+                                        table_cell_label(*location, kind, grid.map(Arc::as_ref))
+                                            .expect("table cell semantics have a label")
                                     }
                                     SemanticKind::Image(alt) => {
-                                        let encoded = alt.as_bytes().iter()
+                                        let encoded = alt
+                                            .as_bytes()
+                                            .iter()
                                             .map(|byte| format!("{byte:02x}"))
                                             .collect::<String>();
                                         format!("typst.ts:image:{id}:{encoded}")
                                     }
-                                }.into();
-                                converted_item =
-                                    self.store(VecItem::Labelled(LabelledRef(label, converted_item)));
+                                }
+                                .into();
+                                converted_item = self
+                                    .store(VecItem::Labelled(LabelledRef(label, converted_item)));
                             }
                         }
                         if let Some(row) = row_anchor_state

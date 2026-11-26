@@ -66,9 +66,32 @@ function navigateLink(event: MouseEvent) {
     target.scrollIntoView({ block: 'center', inline: 'nearest' });
     return;
   }
-  const destination = anchor.closest('[data-typst-label^="typst.ts:destination:"]')
-    ?.getAttribute('data-typst-label')?.slice('typst.ts:destination:'.length);
-  if (!destination || !/^\d+$/.test(destination)) {
+  const destinationLabel = anchor.closest('[data-typst-label^="typst.ts:destination:"]')
+    ?.getAttribute('data-typst-label');
+  if (!destinationLabel) {
+    const [pageNumber, x, y] = location.trim().split(/\s+/).map(Number);
+    const page = Number.isSafeInteger(pageNumber) && pageNumber > 0
+      ? root.querySelectorAll<SVGGElement>('.typst-page')[pageNumber - 1]
+      : undefined;
+    const transform = page?.getScreenCTM();
+    const svg = page?.ownerSVGElement;
+    if (!page || !transform || !svg || !Number.isFinite(x) || !Number.isFinite(y)) {
+      emit('error', new Error('Typst position target is unavailable.'));
+      return;
+    }
+    const point = svg.createSVGPoint();
+    point.x = x;
+    point.y = y;
+    const screenPoint = point.matrixTransform(transform);
+    window.scrollTo({
+      left: window.scrollX + screenPoint.x - window.innerWidth * 0.07,
+      top: window.scrollY + screenPoint.y - window.innerHeight * 0.382,
+      behavior: 'smooth',
+    });
+    return;
+  }
+  const destination = destinationLabel.slice('typst.ts:destination:'.length);
+  if (!/^\d+$/.test(destination)) {
     emit('error', new Error('Typst location target is unavailable.'));
     return;
   }
@@ -129,7 +152,12 @@ onMounted(async () => {
 });
 
 watch(
-  [() => props.content, () => [...props.rowNumbers], () => [...props.assets], () => props.fragmentLinksOnly],
+  [
+    () => props.content,
+    () => [...props.rowNumbers],
+    () => props.assets.map(({ path, bytes }) => ({ path, bytes })),
+    () => props.fragmentLinksOnly,
+  ],
   async ([content, rowNumbers, assets, fragmentLinksOnly], [previousContent, previousRows, previousAssets, previousPolicy]) => {
     if (
       content === previousContent &&

@@ -113,6 +113,97 @@ async function compileTypst(
   };
 }
 
+function annotateTableStructure(container: HTMLElement, nodes: Map<string, SVGElement>): void {
+  const cellsByTable = new Map<string, Map<string, {
+    label: string;
+    row: number;
+    column: number;
+    colspan: number;
+    rowspan: number;
+    role: string;
+  }>>();
+  for (const group of container.querySelectorAll('[data-typst-label^="typst.ts:table-cell:"]')) {
+    const label = group.getAttribute('data-typst-label')!;
+    const cell = /^typst\.ts:table-cell:\d+:(\d+):(\d+):(\d+):(\d+):(cell|columnheader|rowheader):([01])$/
+      .exec(label);
+    if (!cell || cell[6] === '1') continue;
+    const tableGroup = group.parentElement?.closest('[data-typst-label^="typst.ts:table:"]');
+    const tableLabel = tableGroup?.getAttribute('data-typst-label');
+    if (!tableLabel) continue;
+
+    const cells = cellsByTable.get(tableLabel) ?? new Map();
+    const row = Number(cell[1]);
+    const column = Number(cell[2]);
+    const key = `${row}:${column}`;
+    if (!cells.has(key)) {
+      cells.set(key, {
+        label,
+        row,
+        column,
+        colspan: Number(cell[3]),
+        rowspan: Number(cell[4]),
+        role: cell[5],
+      });
+    }
+    cellsByTable.set(tableLabel, cells);
+  }
+
+  for (const group of container.querySelectorAll('[data-typst-label^="typst.ts:table:"]')) {
+    const label = group.getAttribute('data-typst-label')!;
+    const table = /^typst\.ts:table:\d+:(\d+):(\d+):([\d,]*)$/.exec(label);
+    if (!table || nodes.has(label)) continue;
+
+    const rowCount = Number(table[1]);
+    const columnCount = Number(table[2]);
+    if (!Number.isSafeInteger(rowCount) || !Number.isSafeInteger(columnCount)) {
+      throw new Error('Invalid Typst table dimensions');
+    }
+    const headerRows = new Set(table[3].split(',').filter(Boolean).map(Number));
+    const cells = cellsByTable.get(label) ?? new Map();
+    const tableNode = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    tableNode.setAttribute('role', 'table');
+    group.before(tableNode);
+    nodes.set(label, tableNode);
+
+    const occupied = new Set<string>();
+    for (let row = 0; row < rowCount; row++) {
+      const rowLabel = `${label}:row:${row}`;
+      const rowNode = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+      rowNode.setAttribute('role', 'row');
+      insertOrdered(tableNode, rowNode, row);
+      nodes.set(rowLabel, rowNode);
+
+      for (let column = 0; column < columnCount; column++) {
+        const key = `${row}:${column}`;
+        if (occupied.has(key)) continue;
+        const cell = cells.get(key);
+        const cellNode = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        cellNode.setAttribute('role', cell?.role ?? (headerRows.has(row) ? 'columnheader' : 'cell'));
+        if (cell?.colspan && cell.colspan > 1) {
+          cellNode.setAttribute('aria-colspan', String(cell.colspan));
+        }
+        if (cell?.rowspan && cell.rowspan > 1) {
+          cellNode.setAttribute('aria-rowspan', String(cell.rowspan));
+        }
+        insertOrdered(rowNode, cellNode, column);
+        if (cell) nodes.set(cell.label, cellNode);
+
+        for (let coveredRow = row; coveredRow < Math.min(rowCount, row + (cell?.rowspan ?? 1)); coveredRow++) {
+          for (
+            let coveredColumn = column;
+            coveredColumn < Math.min(columnCount, column + (cell?.colspan ?? 1));
+            coveredColumn++
+          ) {
+            if (coveredRow !== row || coveredColumn !== column) {
+              occupied.add(`${coveredRow}:${coveredColumn}`);
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 function annotateSemantics(svgSource: string, fragmentLinksOnly: boolean): string {
   const container = document.createElement('div');
   container.innerHTML = svgSource;
@@ -136,8 +227,10 @@ function annotateSemantics(svgSource: string, fragmentLinksOnly: boolean): strin
     anchors.push(...group.querySelectorAll<SVGAElement>('a'));
     linkGroups.set(label, anchors);
   }
+  annotateTableStructure(container, nodes);
   for (const text of container.querySelectorAll('.tsel, [data-typst-label^="typst.ts:image:"]')) {
-    const image = text.hasAttribute('data-typst-label');
+    const label = text.getAttribute('data-typst-label');
+    const image = label?.startsWith('typst.ts:image:') ?? false;
     const ancestors: {
       group: Element;
       label: string;
@@ -181,7 +274,8 @@ function annotateSemantics(svgSource: string, fragmentLinksOnly: boolean): strin
           });
           continue;
         }
-        const match = /^typst\.ts:(heading|list|list-item|table|link):\d+(?::(\d+))?$/.exec(label);
+        const table = /^typst\.ts:table:\d+:\d+:\d+:[\d,]*$/.test(label);
+        const match = /^typst\.ts:(heading|list|list-item|link):\d+(?::(\d+))?$/.exec(label);
         if (match?.[1] === 'link' && fragmentLinksOnly) {
           const anchors = linkGroups.get(label) ?? [];
           if (anchors.length && anchors.every(anchor =>
@@ -189,7 +283,8 @@ function annotateSemantics(svgSource: string, fragmentLinksOnly: boolean): strin
             !anchor.hasAttributeNS('http://www.w3.org/1999/xlink', 'href')
           )) continue;
         }
-        if (match) ancestors.unshift({
+        if (table) ancestors.unshift({ group: parent, label, role: 'table' });
+        else if (match) ancestors.unshift({
           group: parent,
           label,
           role: match[1] === 'list-item' ? 'listitem' : match[1],

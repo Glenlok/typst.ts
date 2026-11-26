@@ -359,6 +359,20 @@ test('preserves outer table header roles around a nested table', async ({ page }
   await expect(first.getByRole('cell')).toHaveCount(1);
 });
 
+test('preserves auto-kind outer table headers around nested tables', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/');
+  const first = page.getByTestId('first');
+  await expect(first.locator('svg')).toBeVisible();
+  await page.getByLabel('Typst source').fill(
+    '#table(columns: 1, table.header([Before #table(columns: 1, [Nested]) After]))',
+  );
+  await expect(first.locator('svg')).toContainText('Nested');
+
+  await expect(first.getByRole('table')).toHaveCount(2);
+  await expect(first.getByRole('columnheader', { name: /Before.*After/ })).toHaveCount(1);
+  await expect(first.getByRole('cell')).toHaveCount(1);
+});
+
 test('nests tables inside their parent table cell', async ({ page }) => {
   await page.goto('http://127.0.0.1:5173/tests/');
   const first = page.getByTestId('first');
@@ -430,8 +444,7 @@ test('includes empty rows and cells in accessible tables', async ({ page }) => {
   await expect(first.getByRole('row').nth(2).getByRole('cell')).toHaveCount(2);
 });
 
-test('documents empty-table structure lost by Typst layout', async ({ page }) => {
-  test.fail(true, 'Typst drops cell tags when empty cells produce no frames');
+test('preserves fully empty table structure', async ({ page }) => {
   await page.goto('http://127.0.0.1:5173/tests/?assets');
   const first = page.getByTestId('first');
   await expect(first.locator('svg')).toBeVisible();
@@ -441,6 +454,8 @@ test('documents empty-table structure lost by Typst layout', async ({ page }) =>
     '#table(columns: 2, stroke: 1pt + black, inset: 5pt, [], [], [], [])',
   );
   await expect(first.getByRole('table')).toHaveCount(1);
+  await expect(first.getByRole('row')).toHaveCount(2);
+  await expect(first.getByRole('cell')).toHaveCount(4);
 });
 
 test('preserves image-only table cells without alt text', async ({ page }) => {

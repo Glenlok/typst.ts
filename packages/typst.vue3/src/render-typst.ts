@@ -313,6 +313,7 @@ function annotateSemantics(svgSource: string, fragmentLinksOnly: boolean): strin
         owner = rowNode;
       }
       let node = nodes.get(label);
+      if (node && role === 'table' && owner) owner.append(node);
       if (!node) {
         if (role === 'link') {
           const anchors = linkGroups.get(label) ?? [];

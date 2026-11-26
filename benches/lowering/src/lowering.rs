@@ -38,7 +38,6 @@ fn main() {
     // initialize global variables
     let _unused = TEST_COMPILER.lock().unwrap();
     drop(_unused);
-    let _doc = TEST_DOC.clone();
 
     // Run registered benchmarks.
     divan::main();
@@ -63,14 +62,27 @@ fn lower_incr_impl<'a>(docs: impl Iterator<Item = &'a Arc<TypstPagedDocument>>) 
 
 // Check lowering performance with cache
 #[divan::bench]
-fn lower_cached() {
-    lower_impl(&TEST_DOC);
+fn lower_cached(bencher: Bencher) {
+    let document = TEST_DOC.clone();
+    bencher.bench_local(|| lower_impl(&document));
 }
 
 // Check lowering performance without cache
 #[divan::bench]
 fn lower_uncached() {
     lower_impl(&TEST_DOC);
+}
+
+#[divan::bench(args = [256, 512, 1024])]
+fn lower_table_rows(bencher: Bencher, row_count: usize) {
+    let rows = (0..row_count)
+        .map(|_| "[Key], [Value]")
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source = format!("#table(columns: 2, table.header([Key], [Value]), {rows})");
+    let document = compile(&TEST_COMPILER, &source);
+
+    bencher.bench_local(|| lower_impl(&document));
 }
 
 // Check lowering performance during user edition

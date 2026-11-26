@@ -345,6 +345,37 @@ test('exposes table headers and cells in row order', async ({ page }) => {
   await expect(first.getByRole('cell', { name: '5 m' })).toHaveCount(1);
 });
 
+test('preserves outer table header roles around a nested table', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/');
+  const first = page.getByTestId('first');
+  await expect(first.locator('svg')).toBeVisible();
+  await page.getByLabel('Typst source').fill(
+    '#table(columns: 1, table.header(table.cell([Before #table(columns: 1, [Nested]) After])))',
+  );
+  await expect(first.locator('svg')).toContainText('Nested');
+
+  await expect(first.getByRole('table')).toHaveCount(2);
+  await expect(first.getByRole('columnheader', { name: /Before.*After/ })).toHaveCount(1);
+  await expect(first.getByRole('cell')).toHaveCount(1);
+});
+
+test('nests tables inside their parent table cell', async ({ page }) => {
+  await page.goto('http://127.0.0.1:5173/tests/');
+  const first = page.getByTestId('first');
+  await expect(first.locator('svg')).toBeVisible();
+  await page.getByLabel('Typst source').fill(
+    '#table(columns: 1, [Outer #table(columns: 1, [Nested])])',
+  );
+  await expect(first.locator('svg')).toContainText('Nested');
+
+  const tables = first.getByRole('table');
+  await expect(tables).toHaveCount(2);
+  const parentCell = tables.nth(0).getByRole('cell').first();
+  await expect(parentCell.getByRole('table')).toHaveCount(1);
+  await expect(parentCell.getByRole('table').getByRole('cell', { name: 'Nested' }))
+    .toHaveCount(1);
+});
+
 test('keeps a table cell together semantically when it spans pages', async ({ page }) => {
   await page.goto('http://127.0.0.1:5173/tests/');
   const first = page.getByTestId('first');

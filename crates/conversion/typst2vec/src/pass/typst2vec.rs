@@ -226,6 +226,7 @@ struct RowAnchorState {
     semantics: Vec<(Location, SemanticKind)>,
     logical_paths: HashMap<Location, Vec<(Location, SemanticKind)>>,
     logical_parents: Vec<Location>,
+    table_labels: HashMap<Location, String>,
 }
 
 impl RowAnchorState {
@@ -264,6 +265,11 @@ impl RowAnchorState {
                     return;
                 }
                 if let Some(kind) = semantic_kind(element) {
+                    if let SemanticKind::Table(grid) = &kind {
+                        self.table_labels
+                            .entry(location)
+                            .or_insert_with(|| table_label(location, grid));
+                    }
                     let is_cell = matches!(kind, SemanticKind::TableCell { .. });
                     self.semantics.push((location, kind));
                     if is_cell {
@@ -869,9 +875,13 @@ impl<const ENABLE_REF_CNT: bool> Typst2VecPassImpl<ENABLE_REF_CNT> {
                                         format!("typst.ts:list-marker:{id}")
                                     }
                                     SemanticKind::Link => format!("typst.ts:link:{id}"),
-                                    SemanticKind::Table(grid) => {
-                                        table_label(*location, grid.as_ref())
-                                    }
+                                    SemanticKind::Table(_) => row_anchor_state
+                                        .as_deref()
+                                        .unwrap()
+                                        .table_labels
+                                        .get(location)
+                                        .expect("table semantics have a label")
+                                        .clone(),
                                     SemanticKind::TableCell { .. } => {
                                         let grid = row_anchor_state
                                             .as_deref()

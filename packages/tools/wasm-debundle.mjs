@@ -59,6 +59,7 @@ export {
 
     console.log(`Processed ${rustWasmFN}...`);
 
+    writeFileSync('pkg/.npmignore', '');
     unlinkSync(`pkg/${fileName}`);
     // rewrite extension: .js -> .mjs
     fileName = fileName.replace(/\.js$/, '.mjs');

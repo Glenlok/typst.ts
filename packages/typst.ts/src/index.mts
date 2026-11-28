@@ -5,6 +5,9 @@ export type {
   RenderInSessionOptions,
   RenderCanvasOptions as RenderPageOptions,
   RenderOptions,
+  RenderSvgWithRowAnchorsOptions,
+  RenderSvgWithRowAnchorsResult,
+  TypstSvgRowAnchor,
 } from './options.render.mjs';
 export { loadFonts, preloadRemoteFonts, preloadSystemFonts } from './options.init.mjs';
 export type { RenderSession, TypstRenderer } from './renderer.mjs';

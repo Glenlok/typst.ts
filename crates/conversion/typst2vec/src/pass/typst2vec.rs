@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    collections::{HashMap, HashSet},
     hash::Hash,
     ops::DerefMut,
     sync::{atomic::AtomicU64, Arc},
@@ -15,18 +16,21 @@ use reflexo::typst::{TypstDocument, TypstHtmlDocument, TypstPagedDocument};
 use reflexo::ImmutStr;
 use ttf_parser::{GlyphId, OutlineBuilder};
 use typst::{
-    foundations::{Bytes, Smart},
-    introspection::{Introspector, PagedPosition, Tag},
+    foundations::{Bytes, Content, Smart, StyleChain, Value},
+    introspection::{Introspector, Location, MetadataElem, PagedPosition, Tag},
     layout::{
-        Abs as TypstAbs, Axes, Dir, Frame, FrameItem, FrameKind, Ratio as TypstRatio,
-        Size as TypstSize, Transform as TypstTransform,
+        resolve::CellGrid, Abs as TypstAbs, Axes, Dir, Frame, FrameItem, FrameKind, Inherit,
+        Point as TypstPoint, Ratio as TypstRatio, Size as TypstSize, Transform as TypstTransform,
     },
-    model::Destination,
+    model::{
+        Destination, EnumElem, HeadingElem, LinkMarker, ListElem, Outlinable, TableCell, TableElem,
+    },
+    pdf::{PdfMarkerTag, PdfMarkerTagKind, TableCellKind, TableHeaderScope},
     syntax::Span,
     text::TextItem as TypstTextItem,
     visualize::{
         CurveItem as TypstCurveItem, FillRule, FixedStroke, Geometry, Gradient,
-        Image as TypstImage, LineCap, LineJoin, Paint, RelativeTo, Shape, Tiling,
+        Image as TypstImage, ImageElem, LineCap, LineJoin, Paint, RelativeTo, Shape, Tiling,
     },
 };
 use typst_html::{HtmlElement, HtmlNode};
@@ -45,6 +49,253 @@ use super::{SourceNodeKind, SourceRegion, Span2VecPass, TGlyph2VecPass};
 
 // todo: we need to remove this magic size
 pub const PAGELESS_SIZE: ir::Size = Size::new(Scalar(1e2 + 4.1234567), Scalar(1e3 + 4.1234567));
+
+enum RowAnchorMarker {
+    Start(u64),
+    End(u64),
+}
+
+fn row_anchor_marker(item: &FrameItem) -> Option<RowAnchorMarker> {
+    let FrameItem::Tag(Tag::Start(element, _)) = item else {
+        return None;
+    };
+    let metadata = element.to_packed::<MetadataElem>()?;
+    let Value::Str(value) = &metadata.value else {
+        return None;
+    };
+
+    let mut parts = value.as_str().split(':');
+    if parts.next()? != "typst.ts" || parts.next()? != "row-anchor" {
+        return None;
+    }
+    let edge = parts.next()?;
+    let row = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+
+    match edge {
+        "start" => Some(RowAnchorMarker::Start(row)),
+        "end" => Some(RowAnchorMarker::End(row)),
+        _ => None,
+    }
+}
+
+#[derive(Clone)]
+enum SemanticKind {
+    Heading(usize),
+    List,
+    ListItem,
+    ListMarker,
+    Link,
+    Table(Arc<CellGrid>),
+    TableCell {
+        x: usize,
+        y: usize,
+        colspan: usize,
+        rowspan: usize,
+        kind: Smart<TableCellKind>,
+        repeated: bool,
+    },
+    Image(String),
+}
+
+fn semantic_kind(element: &Content) -> Option<SemanticKind> {
+    if let Some(heading) = element.to_packed::<HeadingElem>() {
+        Some(SemanticKind::Heading(heading.level().get()))
+    } else if element.is::<ListElem>() || element.is::<EnumElem>() {
+        Some(SemanticKind::List)
+    } else if element.is::<LinkMarker>() {
+        Some(SemanticKind::Link)
+    } else if let Some(table) = element.to_packed::<TableElem>() {
+        table.grid.clone().map(SemanticKind::Table)
+    } else if let Some(cell) = element.to_packed::<TableCell>() {
+        let styles = StyleChain::default();
+        Some(SemanticKind::TableCell {
+            x: cell
+                .x
+                .get(styles)
+                .unwrap_or_else(|| panic!("table cell column is unresolved")),
+            y: cell
+                .y
+                .get(styles)
+                .unwrap_or_else(|| panic!("table cell row is unresolved")),
+            colspan: cell.colspan.get(styles).get(),
+            rowspan: cell.rowspan.get(styles).get(),
+            kind: cell.kind.get(styles),
+            repeated: cell.is_repeated.get(styles),
+        })
+    } else if let Some(image) = element.to_packed::<ImageElem>() {
+        image
+            .alt
+            .get_ref(StyleChain::default())
+            .as_ref()
+            .map(|alt| SemanticKind::Image(alt.to_string()))
+    } else if let Some(marker) = element.to_packed::<PdfMarkerTag>() {
+        match marker.kind {
+            PdfMarkerTagKind::ListItemBody => Some(SemanticKind::ListItem),
+            PdfMarkerTagKind::ListItemLabel => Some(SemanticKind::ListMarker),
+            _ => None,
+        }
+    } else {
+        None
+    }
+}
+
+fn table_cell_label(
+    location: Location,
+    kind: &SemanticKind,
+    grid: Option<&CellGrid>,
+) -> Option<String> {
+    let SemanticKind::TableCell {
+        x,
+        y,
+        colspan,
+        rowspan,
+        kind,
+        repeated,
+    } = kind
+    else {
+        return None;
+    };
+
+    let header = match kind {
+        Smart::Custom(TableCellKind::Header(_, TableHeaderScope::Row)) => "rowheader",
+        Smart::Custom(TableCellKind::Header(..)) => "columnheader",
+        Smart::Custom(_) => "cell",
+        Smart::Auto
+            if grid.is_some_and(|grid| {
+                grid.headers.iter().any(|header| {
+                    header
+                        .range
+                        .contains(&(if grid.has_gutter { 2 * y } else { *y }))
+                })
+            }) =>
+        {
+            "columnheader"
+        }
+        Smart::Auto => "cell",
+    };
+
+    Some(format!(
+        "typst.ts:table-cell:{}:{y}:{x}:{colspan}:{rowspan}:{header}:{}",
+        location.hash(),
+        u8::from(*repeated)
+    ))
+}
+
+fn table_label(location: Location, grid: &CellGrid) -> String {
+    let header_rows = (0..grid.non_gutter_row_count())
+        .filter(|row| {
+            grid.headers.iter().any(|header| {
+                header
+                    .range
+                    .contains(&if grid.has_gutter { 2 * *row } else { *row })
+            })
+        })
+        .map(|row| row.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+
+    format!(
+        "typst.ts:table:{}:{}:{}:{header_rows}",
+        location.hash(),
+        grid.non_gutter_row_count(),
+        grid.non_gutter_column_count()
+    )
+}
+
+fn frame_needs_ordered_traversal(frame: &Frame) -> bool {
+    frame.items().any(|(_, item)| match item {
+        FrameItem::Group(group) => frame_needs_ordered_traversal(&group.frame),
+        FrameItem::Tag(Tag::Start(element, flags))
+            if flags.tagged && semantic_kind(element).is_some() =>
+        {
+            true
+        }
+        FrameItem::Link(Destination::Location(_), _) => true,
+        _ => row_anchor_marker(item).is_some(),
+    })
+}
+
+#[derive(Default)]
+struct RowAnchorState {
+    active_row: Option<u64>,
+    destinations: HashSet<Location>,
+    active_targets: Vec<Location>,
+    semantics: Vec<(Location, SemanticKind)>,
+    logical_paths: HashMap<Location, Vec<(Location, SemanticKind)>>,
+    logical_parents: Vec<Location>,
+    table_labels: HashMap<Location, String>,
+}
+
+impl RowAnchorState {
+    fn collect_destinations(&mut self, frame: &Frame) {
+        for (_, item) in frame.items() {
+            match item {
+                FrameItem::Group(group) => self.collect_destinations(&group.frame),
+                FrameItem::Link(Destination::Location(location), _) => {
+                    self.destinations.insert(*location);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn update(&mut self, marker: RowAnchorMarker) {
+        self.active_row = match marker {
+            RowAnchorMarker::Start(row) if self.active_row.is_none() => Some(row),
+            RowAnchorMarker::End(row) if self.active_row == Some(row) => None,
+            RowAnchorMarker::Start(_) | RowAnchorMarker::End(_) => None,
+        };
+    }
+
+    fn update_semantics(&mut self, tag: &Tag) {
+        match tag {
+            Tag::Start(element, _) if self.destinations.contains(&element.location().unwrap()) => {
+                self.active_targets.push(element.location().unwrap());
+            }
+            Tag::End(location, _, _) => self.active_targets.retain(|active| active != location),
+            _ => {}
+        }
+        match tag {
+            Tag::Start(element, flags) if flags.tagged => {
+                let location = element.location().unwrap();
+                if self.logical_parents.contains(&location) {
+                    return;
+                }
+                if let Some(kind) = semantic_kind(element) {
+                    if let SemanticKind::Table(grid) = &kind {
+                        self.table_labels
+                            .entry(location)
+                            .or_insert_with(|| table_label(location, grid));
+                    }
+                    let is_cell = matches!(kind, SemanticKind::TableCell { .. });
+                    self.semantics.push((location, kind));
+                    if is_cell {
+                        self.logical_paths.insert(location, self.semantics.clone());
+                    }
+                }
+            }
+            Tag::End(location, _, flags) if flags.tagged => {
+                if !self.logical_parents.contains(location) {
+                    self.semantics.retain(|(active, _)| active != location);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_logical_paths(&mut self, frame: &Frame) {
+        for (_, item) in frame.items() {
+            match item {
+                FrameItem::Group(group) => self.collect_logical_paths(&group.frame),
+                FrameItem::Tag(tag) => self.update_semantics(tag),
+                _ => {}
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 struct State<'a> {
@@ -276,29 +527,80 @@ impl<const ENABLE_REF_CNT: bool> Typst2VecPassImpl<ENABLE_REF_CNT> {
     pub fn paged(&self, doc: &TypstPagedDocument) -> Vec<Page> {
         let doc_reg = self.spans.start();
 
-        let pages = doc
+        let pages = if doc
             .pages()
-            .par_iter()
-            .enumerate()
-            .map(|(idx, p)| {
-                let page_reg = self.spans.start();
+            .iter()
+            .any(|page| frame_needs_ordered_traversal(&page.frame))
+        {
+            let mut row_anchor_state = RowAnchorState::default();
+            for page in doc.pages() {
+                row_anchor_state.collect_destinations(&page.frame);
+            }
+            for page in doc.pages() {
+                row_anchor_state.collect_logical_paths(&page.frame);
+            }
+            row_anchor_state.semantics.clear();
+            row_anchor_state.active_targets.clear();
+            doc.pages()
+                .iter()
+                .enumerate()
+                .map(|(idx, page)| {
+                    let page_reg = self.spans.start();
+                    let state =
+                        State::new(doc.introspector().as_ref(), page.frame.size().into_typst());
+                    let abs_ref = self.frame_(
+                        state,
+                        &page.frame,
+                        page_reg,
+                        idx,
+                        page.fill_or_transparent(),
+                        Some(&mut row_anchor_state),
+                    );
 
-                let state = State::new(doc.introspector().as_ref(), p.frame.size().into_typst());
-                let abs_ref = self.frame_(state, &p.frame, page_reg, idx, p.fill_or_transparent());
+                    self.spans.push_span(SourceRegion {
+                        region: doc_reg,
+                        idx: idx as u32,
+                        kind: SourceNodeKind::Page { region: page_reg },
+                        item: abs_ref,
+                    });
 
-                self.spans.push_span(SourceRegion {
-                    region: doc_reg,
-                    idx: idx as u32,
-                    kind: SourceNodeKind::Page { region: page_reg },
-                    item: abs_ref,
-                });
+                    Page {
+                        content: abs_ref,
+                        size: page.frame.size().into_typst(),
+                    }
+                })
+                .collect()
+        } else {
+            doc.pages()
+                .par_iter()
+                .enumerate()
+                .map(|(idx, page)| {
+                    let page_reg = self.spans.start();
+                    let state =
+                        State::new(doc.introspector().as_ref(), page.frame.size().into_typst());
+                    let abs_ref = self.frame_(
+                        state,
+                        &page.frame,
+                        page_reg,
+                        idx,
+                        page.fill_or_transparent(),
+                        None,
+                    );
 
-                Page {
-                    content: abs_ref,
-                    size: p.frame.size().into_typst(),
-                }
-            })
-            .collect();
+                    self.spans.push_span(SourceRegion {
+                        region: doc_reg,
+                        idx: idx as u32,
+                        kind: SourceNodeKind::Page { region: page_reg },
+                        item: abs_ref,
+                    });
+
+                    Page {
+                        content: abs_ref,
+                        size: page.frame.size().into_typst(),
+                    }
+                })
+                .collect()
+        };
 
         self.spans
             .doc_region
@@ -308,7 +610,7 @@ impl<const ENABLE_REF_CNT: bool> Typst2VecPassImpl<ENABLE_REF_CNT> {
     }
 
     fn frame(&self, state: State, frame: &Frame, parent: usize, index: usize) -> Fingerprint {
-        self.frame_(state, frame, parent, index, None)
+        self.frame_(state, frame, parent, index, None, None)
     }
 
     fn frame_(
@@ -318,6 +620,7 @@ impl<const ENABLE_REF_CNT: bool> Typst2VecPassImpl<ENABLE_REF_CNT> {
         parent: usize,
         index: usize,
         fill: Option<Paint>,
+        mut row_anchor_state: Option<&mut RowAnchorState>,
     ) -> Fingerprint {
         let src_reg = self.spans.start();
 
@@ -351,143 +654,280 @@ impl<const ENABLE_REF_CNT: bool> Typst2VecPassImpl<ENABLE_REF_CNT> {
             });
         }
 
-        let items_iter = frame.items().as_slice().par_iter().enumerate();
-        let items_iter = items_iter.flat_map(|(idx, (pos, item))| {
-            let idx = fill_adjust + idx;
-            let mut is_link = false;
-            let state = state.pre_translate((*pos).into_typst());
-            let item = match item {
-                FrameItem::Group(group) => {
-                    let state = state.pre_concat(group.transform.into_typst());
+        let convert_item =
+            |idx: usize,
+             pos: &TypstPoint,
+             item: &FrameItem,
+             row_anchor_state: Option<&mut RowAnchorState>| {
+                let idx = fill_adjust + idx;
+                let mut is_link = false;
+                let state = state.pre_translate((*pos).into_typst());
+                let item = match item {
+                    FrameItem::Group(group) => {
+                        let state = state.pre_concat(group.transform.into_typst());
 
-                    let mut inner = self.frame(state, &group.frame, src_reg, idx);
-
-                    if let Some(p) = group.clip.as_ref() {
-                        // todo: merge
-                        let mut builder = SvgPath2DBuilder(String::new());
-
-                        // to ensure that our shape focus on the original point
-                        builder.move_to(0., 0.);
-                        for elem in &p.0 {
-                            match elem {
-                                TypstCurveItem::Move(p) => {
-                                    builder.move_to(p.x.to_f32(), p.y.to_f32());
-                                }
-                                TypstCurveItem::Line(p) => {
-                                    builder.line_to(p.x.to_f32(), p.y.to_f32());
-                                }
-                                TypstCurveItem::Cubic(p1, p2, p3) => {
-                                    builder.curve_to(
-                                        p1.x.to_f32(),
-                                        p1.y.to_f32(),
-                                        p2.x.to_f32(),
-                                        p2.y.to_f32(),
-                                        p3.x.to_f32(),
-                                        p3.y.to_f32(),
-                                    );
-                                }
-                                TypstCurveItem::Close => {
-                                    builder.close();
-                                }
-                            };
-                        }
-                        let d = builder.0.into();
-
-                        inner = self.store(VecItem::Item(TransformedRef(
-                            TransformItem::Clip(Arc::new(PathItem {
-                                d,
-                                size: None,
-                                styles: vec![],
-                            })),
-                            inner,
-                        )));
-                    };
-
-                    if group.transform != TypstTransform::identity() {
-                        inner = self.store(VecItem::Item(TransformedRef(
-                            TransformItem::Matrix(Arc::new(group.transform.into_typst())),
-                            inner,
-                        )));
-                    }
-
-                    if let Some(label) = group.label.as_ref() {
-                        let label = label.resolve().as_str().into();
-                        inner = self.store(VecItem::Labelled(LabelledRef(label, inner)));
-                    }
-
-                    inner
-                }
-                FrameItem::Text(text) => {
-                    let i = self.text(state, text);
-
-                    self.spans.push_span(SourceRegion {
-                        region: src_reg,
-                        idx: idx as u32,
-                        kind: if text.glyphs.len() == 1 {
-                            SourceNodeKind::Char(text.glyphs[0].span)
+                        let mut inner = if let Some(row_anchor_state) = row_anchor_state {
+                            let logical_parent = group.parent.filter(|parent| {
+                                parent.inherit == Inherit::Yes
+                                    && row_anchor_state
+                                        .logical_paths
+                                        .contains_key(&parent.location)
+                            });
+                            let previous = logical_parent.map(|parent| {
+                                let path = row_anchor_state.logical_paths[&parent.location].clone();
+                                row_anchor_state.logical_parents.push(parent.location);
+                                std::mem::replace(&mut row_anchor_state.semantics, path)
+                            });
+                            let inner = self.frame_(
+                                state,
+                                &group.frame,
+                                src_reg,
+                                idx,
+                                None,
+                                Some(row_anchor_state),
+                            );
+                            if let Some(previous) = previous {
+                                row_anchor_state.semantics = previous;
+                                row_anchor_state.logical_parents.pop();
+                            }
+                            inner
                         } else {
-                            SourceNodeKind::Text(text.glyphs.iter().map(|g| g.span).collect())
-                        },
-                        item: i,
-                    });
+                            self.frame(state, &group.frame, src_reg, idx)
+                        };
 
-                    i
-                }
-                FrameItem::Shape(shape, s) => {
-                    let i = self.shape(state, shape);
+                        if let Some(p) = group.clip.as_ref() {
+                            // todo: merge
+                            let mut builder = SvgPath2DBuilder(String::new());
 
-                    // todo: fill rule
-                    self.spans.push_span(SourceRegion {
-                        region: src_reg,
-                        idx: idx as u32,
-                        kind: SourceNodeKind::Shape(*s),
-                        item: i,
-                    });
+                            // to ensure that our shape focus on the original point
+                            builder.move_to(0., 0.);
+                            for elem in &p.0 {
+                                match elem {
+                                    TypstCurveItem::Move(p) => {
+                                        builder.move_to(p.x.to_f32(), p.y.to_f32());
+                                    }
+                                    TypstCurveItem::Line(p) => {
+                                        builder.line_to(p.x.to_f32(), p.y.to_f32());
+                                    }
+                                    TypstCurveItem::Cubic(p1, p2, p3) => {
+                                        builder.curve_to(
+                                            p1.x.to_f32(),
+                                            p1.y.to_f32(),
+                                            p2.x.to_f32(),
+                                            p2.y.to_f32(),
+                                            p3.x.to_f32(),
+                                            p3.y.to_f32(),
+                                        );
+                                    }
+                                    TypstCurveItem::Close => {
+                                        builder.close();
+                                    }
+                                };
+                            }
+                            let d = builder.0.into();
 
-                    i
-                }
-                FrameItem::Image(image, size, s) => {
-                    let i = self.image(image, *size);
+                            inner = self.store(VecItem::Item(TransformedRef(
+                                TransformItem::Clip(Arc::new(PathItem {
+                                    d,
+                                    size: None,
+                                    styles: vec![],
+                                })),
+                                inner,
+                            )));
+                        };
 
-                    self.spans.push_span(SourceRegion {
-                        region: src_reg,
-                        idx: idx as u32,
-                        kind: SourceNodeKind::Image(*s),
-                        item: i,
-                    });
-
-                    i
-                }
-                // Meta::Link(_) => Fingerprint::from_u128(0),
-                FrameItem::Link(lnk, size) => {
-                    is_link = true;
-                    self.store(match lnk {
-                        Destination::Url(url) => self.link(url, *size),
-                        Destination::Position(dest) => self.position(*dest, *size),
-                        Destination::Location(loc) => {
-                            // todo: process location before lowering
-                            let dest = state
-                                .introspector
-                                .position(*loc)
-                                .map_or(PagedPosition::ORIGIN, |dest| dest.as_paged_or_default());
-                            self.position(dest, *size)
+                        if group.transform != TypstTransform::identity() {
+                            inner = self.store(VecItem::Item(TransformedRef(
+                                TransformItem::Matrix(Arc::new(group.transform.into_typst())),
+                                inner,
+                            )));
                         }
-                    })
-                }
-                FrameItem::Tag(Tag::Start(elem, _)) => {
-                    if !LINE_HINT_ELEMENTS.contains(elem.func().name()) {
-                        return None;
-                    }
 
-                    self.store(VecItem::ContentHint('\n'))
-                }
-                FrameItem::Tag(Tag::End(..)) => return None,
-                // todo: support page label
+                        if let Some(label) = group.label.as_ref() {
+                            let label = label.resolve().as_str().into();
+                            inner = self.store(VecItem::Labelled(LabelledRef(label, inner)));
+                        }
+
+                        inner
+                    }
+                    FrameItem::Text(text) => {
+                        let i = self.text(state, text);
+
+                        self.spans.push_span(SourceRegion {
+                            region: src_reg,
+                            idx: idx as u32,
+                            kind: if text.glyphs.len() == 1 {
+                                SourceNodeKind::Char(text.glyphs[0].span)
+                            } else {
+                                SourceNodeKind::Text(text.glyphs.iter().map(|g| g.span).collect())
+                            },
+                            item: i,
+                        });
+
+                        i
+                    }
+                    FrameItem::Shape(shape, s) => {
+                        let i = self.shape(state, shape);
+
+                        // todo: fill rule
+                        self.spans.push_span(SourceRegion {
+                            region: src_reg,
+                            idx: idx as u32,
+                            kind: SourceNodeKind::Shape(*s),
+                            item: i,
+                        });
+
+                        i
+                    }
+                    FrameItem::Image(image, size, s) => {
+                        let i = self.image(image, *size);
+
+                        self.spans.push_span(SourceRegion {
+                            region: src_reg,
+                            idx: idx as u32,
+                            kind: SourceNodeKind::Image(*s),
+                            item: i,
+                        });
+
+                        i
+                    }
+                    // Meta::Link(_) => Fingerprint::from_u128(0),
+                    FrameItem::Link(lnk, size) => {
+                        is_link = true;
+                        self.store(match lnk {
+                            Destination::Url(url) => self.link(url, *size),
+                            Destination::Position(dest) => self.position(*dest, *size),
+                            Destination::Location(loc) => {
+                                // todo: process location before lowering
+                                let dest = state
+                                    .introspector
+                                    .position(*loc)
+                                    .map_or(PagedPosition::ORIGIN, |dest| {
+                                        dest.as_paged_or_default()
+                                    });
+                                self.position(dest, *size)
+                            }
+                        })
+                    }
+                    FrameItem::Tag(Tag::Start(elem, _)) => {
+                        if !LINE_HINT_ELEMENTS.contains(elem.func().name()) {
+                            return None;
+                        }
+
+                        self.store(VecItem::ContentHint('\n'))
+                    }
+                    FrameItem::Tag(Tag::End(..)) => return None,
+                    // todo: support page label
+                };
+
+                Some(((*pos).into_typst(), is_link, item))
             };
 
-            Some(((*pos).into_typst(), is_link, item))
-        });
-        items.par_extend(items_iter);
+        if row_anchor_state.is_some() {
+            for (idx, (pos, item)) in frame.items().as_slice().iter().enumerate() {
+                if let FrameItem::Tag(tag) = item {
+                    row_anchor_state
+                        .as_deref_mut()
+                        .unwrap()
+                        .update_semantics(tag);
+                }
+                if let Some(marker) = row_anchor_marker(item) {
+                    row_anchor_state.as_deref_mut().unwrap().update(marker);
+                    continue;
+                }
+
+                if let Some((pos, is_link, mut converted_item)) =
+                    convert_item(idx, pos, item, row_anchor_state.as_deref_mut())
+                {
+                    if !matches!(item, FrameItem::Group(_)) {
+                        if let FrameItem::Link(Destination::Location(location), _) = item {
+                            let label: ImmutStr =
+                                format!("typst.ts:destination:{}", (*location).hash()).into();
+                            converted_item =
+                                self.store(VecItem::Labelled(LabelledRef(label, converted_item)));
+                        }
+                        if matches!(
+                            item,
+                            FrameItem::Text(_) | FrameItem::Image(..) | FrameItem::Link(..)
+                        ) {
+                            for location in &row_anchor_state.as_deref().unwrap().active_targets {
+                                let label: ImmutStr =
+                                    format!("typst.ts:target:{}", (*location).hash()).into();
+                                converted_item = self
+                                    .store(VecItem::Labelled(LabelledRef(label, converted_item)));
+                            }
+                        }
+                        if matches!(
+                            item,
+                            FrameItem::Text(_) | FrameItem::Image(..) | FrameItem::Link(..)
+                        ) {
+                            for (location, kind) in
+                                row_anchor_state.as_deref().unwrap().semantics.iter().rev()
+                            {
+                                let id = (*location).hash();
+                                let label: ImmutStr = match kind {
+                                    SemanticKind::Heading(level) => {
+                                        format!("typst.ts:heading:{id}:{level}")
+                                    }
+                                    SemanticKind::List => format!("typst.ts:list:{id}"),
+                                    SemanticKind::ListItem => format!("typst.ts:list-item:{id}"),
+                                    SemanticKind::ListMarker => {
+                                        format!("typst.ts:list-marker:{id}")
+                                    }
+                                    SemanticKind::Link => format!("typst.ts:link:{id}"),
+                                    SemanticKind::Table(_) => row_anchor_state
+                                        .as_deref()
+                                        .unwrap()
+                                        .table_labels
+                                        .get(location)
+                                        .expect("table semantics have a label")
+                                        .clone(),
+                                    SemanticKind::TableCell { .. } => {
+                                        let grid = row_anchor_state
+                                            .as_deref()
+                                            .unwrap()
+                                            .semantics
+                                            .iter()
+                                            .rev()
+                                            .find_map(|(_, kind)| match kind {
+                                                SemanticKind::Table(grid) => Some(grid),
+                                                _ => None,
+                                            });
+                                        table_cell_label(*location, kind, grid.map(Arc::as_ref))
+                                            .expect("table cell semantics have a label")
+                                    }
+                                    SemanticKind::Image(alt) => {
+                                        let encoded = alt
+                                            .as_bytes()
+                                            .iter()
+                                            .map(|byte| format!("{byte:02x}"))
+                                            .collect::<String>();
+                                        format!("typst.ts:image:{id}:{encoded}")
+                                    }
+                                }
+                                .into();
+                                converted_item = self
+                                    .store(VecItem::Labelled(LabelledRef(label, converted_item)));
+                            }
+                        }
+                        if let Some(row) = row_anchor_state
+                            .as_deref()
+                            .and_then(|state| state.active_row)
+                        {
+                            let label: ImmutStr = format!("typst.ts:row-anchor:{row}").into();
+                            converted_item =
+                                self.store(VecItem::Labelled(LabelledRef(label, converted_item)));
+                        }
+                    }
+                    items.push((pos, is_link, converted_item));
+                }
+            }
+        } else {
+            let items_iter = frame.items().as_slice().par_iter().enumerate();
+            let items_iter =
+                items_iter.flat_map(|(idx, (pos, item))| convert_item(idx, pos, item, None));
+            items.par_extend(items_iter);
+        }
 
         // swap link items
         items.sort_by(|x, y| {

@@ -1,4 +1,5 @@
 pub mod builder;
+mod function_calls;
 
 #[cfg(feature = "incr")]
 mod incr;
@@ -140,6 +141,16 @@ pub fn get_font_info(buffer: Uint8Array) -> JsValue {
 #[wasm_bindgen]
 #[allow(non_snake_case)]
 impl TypstCompiler {
+    pub fn is_safe_math(&self, source: &str, inline_only: bool) -> bool {
+        function_calls::is_safe_math(source, inline_only)
+    }
+
+    pub fn find_function_calls(&self, source: &str, name: &str) -> Result<JsValue, JsValue> {
+        let calls = function_calls::find_function_calls(source, name)
+            .map_err(|error| JsValue::from_str(error))?;
+        serde_wasm_bindgen::to_value(&calls).map_err(|error| JsValue::from_str(&error.to_string()))
+    }
+
     pub fn reset(&mut self) -> Result<(), JsValue> {
         // reset the world caches
         self.verse.evict(30);

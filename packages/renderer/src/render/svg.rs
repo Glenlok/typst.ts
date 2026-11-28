@@ -65,6 +65,38 @@ impl TypstRenderer {
         Ok(svg)
     }
 
+    pub fn svg_data_with_row_anchors(
+        &mut self,
+        session: &mut RenderSession,
+        row_numbers: Vec<f64>,
+    ) -> Result<String> {
+        type UsingExporter = SvgExporter<DefaultExportFeature>;
+
+        let client = session.client.lock().unwrap();
+        let Some(layout) = &client.layout else {
+            return Err(error_once!("Renderer.MissingLayout"));
+        };
+
+        let view = layout.pages(client.module()).unwrap();
+        let module = view.module();
+        let svg = UsingExporter::render_flat_svg(module, view.pages(), None);
+        for row in row_numbers {
+            if !row.is_finite()
+                || row.fract() != 0.0
+                || !(1.0..=9_007_199_254_740_991.0).contains(&row)
+            {
+                return Err(error_once!("Renderer.InvalidRowAnchor"));
+            }
+
+            let label = format!("typst.ts:row-anchor:{row:.0}");
+            if !svg.contains(&format!("data-typst-label=\"{label}\"")) {
+                return Err(error_once!("Renderer.MissingRowAnchor"));
+            }
+        }
+
+        Ok(svg)
+    }
+
     pub fn get_customs(&self, session: &RenderSession) -> Option<js_sys::Array> {
         let client = session.client.lock().unwrap();
         let layout = client.layout.clone();

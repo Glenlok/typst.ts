@@ -12,6 +12,30 @@ use wasm_bindgen::prelude::*;
 
 use crate::TypstCompiler;
 
+#[wasm_bindgen(inline_js = "
+export const dummyMtime = () => 0;
+export const dummyIsFile = () => true;
+export const dummyRealPath = path => path;
+export const dummyReadAll = () => {
+    throw new Error('Dummy AccessModel, please initialize compiler with withAccessModel()');
+};
+export const dummyResolve = () => {
+    throw new Error('Dummy Registry, please initialize compiler with withPackageRegistry()');
+};
+")]
+extern "C" {
+    #[wasm_bindgen(thread_local_v2, js_name = dummyMtime)]
+    static DUMMY_MTIME: js_sys::Function;
+    #[wasm_bindgen(thread_local_v2, js_name = dummyIsFile)]
+    static DUMMY_IS_FILE: js_sys::Function;
+    #[wasm_bindgen(thread_local_v2, js_name = dummyRealPath)]
+    static DUMMY_REAL_PATH: js_sys::Function;
+    #[wasm_bindgen(thread_local_v2, js_name = dummyReadAll)]
+    static DUMMY_READ_ALL: js_sys::Function;
+    #[wasm_bindgen(thread_local_v2, js_name = dummyResolve)]
+    static DUMMY_RESOLVE: js_sys::Function;
+}
+
 #[wasm_bindgen]
 pub struct TypstCompilerBuilder {
     access_model: Option<ProxyAccessModel>,
@@ -40,18 +64,14 @@ impl TypstCompilerBuilder {
     pub fn set_dummy_access_model(&mut self) -> Result<()> {
         self.access_model = Some(ProxyAccessModel {
             context: wasm_bindgen::JsValue::UNDEFINED,
-            mtime_fn: js_sys::Function::new_no_args("return 0"),
-            is_file_fn: js_sys::Function::new_no_args("return true"),
-            real_path_fn: js_sys::Function::new_with_args("path", "return path"),
-            read_all_fn: js_sys::Function::new_no_args(
-                "throw new Error('Dummy AccessModel, please initialize compiler with withAccessModel()')",
-            ),
+            mtime_fn: DUMMY_MTIME.with(Clone::clone),
+            is_file_fn: DUMMY_IS_FILE.with(Clone::clone),
+            real_path_fn: DUMMY_REAL_PATH.with(Clone::clone),
+            read_all_fn: DUMMY_READ_ALL.with(Clone::clone),
         });
         self.package_registry = Some(JsRegistry {
             context: ProxyContext::new(wasm_bindgen::JsValue::UNDEFINED),
-            real_resolve_fn: js_sys::Function::new_no_args(
-                "throw new Error('Dummy Registry, please initialize compiler with withPackageRegistry()')",
-            ),
+            real_resolve_fn: DUMMY_RESOLVE.with(Clone::clone),
         });
         Ok(())
     }

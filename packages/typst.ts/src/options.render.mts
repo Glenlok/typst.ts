@@ -115,6 +115,20 @@ export interface RenderSvgOptions {
   };
 }
 
+export interface RenderSvgWithRowAnchorsOptions {
+  rowNumbers: number[];
+}
+
+export interface TypstSvgRowAnchor {
+  row: number;
+  label: string;
+}
+
+export interface RenderSvgWithRowAnchorsResult {
+  svg: string;
+  rowAnchors: TypstSvgRowAnchor[];
+}
+
 /**
  * The options for rendering a preprocessed Typst document to specified container.
  * @property {HTMLElement} [container] - The container to render the Typst document.

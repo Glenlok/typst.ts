@@ -21,7 +21,7 @@
   ],
   "scripts": {
     "dev": "vite -c vite.config.dev.ts",
-    "build:types": "vue-tsc -p tsconfig.type.json",
+    "build:types": "vue-tsc -p tsconfig.type.json && node scripts/resolve-declaration-imports.mjs",
     "build": "vite build && vite build --mode umd && vite build --mode fonts && yarn build:types",
     "test": "playwright test",
     "test:tar": "playwright test --config playwright.tar.config.ts",

@@ -2,7 +2,7 @@
   "name": "reflexo-ci-tools",
   "private": true,
   "dependencies": {
-    "npm": "11.5.1",
+    "npm": "11.21.3",
     "yarn": "1.22.22"
   }
 }
